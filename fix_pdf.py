@@ -18,10 +18,14 @@ Fixes applied
   4. PDF/UA-1 XMP identifier (pdfuaid:part = 1) added to metadata
 """
 import sys
+import io
 import shutil
 import argparse
 import traceback
 from pathlib import Path
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import pikepdf
 

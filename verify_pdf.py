@@ -5,7 +5,11 @@ Verify PDF/UA accessibility fixes in a PDF.
 Usage: python verify_pdf.py dissertation.pdf
 """
 import sys
+import io
 from pathlib import Path
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 import pikepdf
 from pypdf import PdfReader
