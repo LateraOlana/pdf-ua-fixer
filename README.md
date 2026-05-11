@@ -56,7 +56,7 @@ python fix_pdf.py <input.pdf> [options]
 **Examples:**
 
 ```bash
-# Default: saves thesis_fixed.pdf next to your_document.pdf
+# Default: saves <name>_fixed.pdf next to the input  (e.g. report.pdf → report_fixed.pdf)
 python fix_pdf.py your_document.pdf
 
 # Save to a different name
