@@ -1,0 +1,2 @@
+pikepdf>=10.0
+pypdf>=4.0
