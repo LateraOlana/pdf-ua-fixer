@@ -17,7 +17,7 @@ cd pdf-ua-fixer
 pip install -r requirements.txt
 
 # 2. Fix your PDF (saves to thesis_fixed.pdf next to the original)
-python fix_pdf.py path/to/thesis.pdf
+python fix_pdf.py path/to/your_document.pdf
 
 # 3. Verify the fixes
 python verify_pdf.py path/to/thesis_fixed.pdf
@@ -56,14 +56,14 @@ python fix_pdf.py <input.pdf> [options]
 **Examples:**
 
 ```bash
-# Default: saves thesis_fixed.pdf next to thesis.pdf
-python fix_pdf.py thesis.pdf
+# Default: saves thesis_fixed.pdf next to your_document.pdf
+python fix_pdf.py your_document.pdf
 
 # Save to a different name
-python fix_pdf.py thesis.pdf --output thesis_ua.pdf
+python fix_pdf.py your_document.pdf --output thesis_ua.pdf
 
 # Overwrite in place (useful after every LaTeX rebuild)
-python fix_pdf.py thesis.pdf --inplace
+python fix_pdf.py your_document.pdf --inplace
 ```
 
 ### Verify a PDF
@@ -139,7 +139,7 @@ If you build your PDF from LaTeX, run this tool once after each build:
 
 ```bash
 pdflatex thesis.tex   # (your usual build command)
-python fix_pdf.py thesis.pdf --inplace
+python fix_pdf.py your_document.pdf --inplace
 ```
 
 The fixes are idempotent — running the tool a second time on an already-fixed
