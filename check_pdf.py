@@ -217,7 +217,7 @@ def _print_check_line(result):
 
 
 def _print_issue_details(all_results):
-    """Print the expanded issue details section."""
+    """Print the expanded issue details section, marking fixability per issue."""
     from checks.base import CheckStatus, Severity
 
     failing = [r for r in all_results if r.status == CheckStatus.FAIL and r.issues]
@@ -232,13 +232,109 @@ def _print_issue_details(all_results):
             colour = "red" if sev_str == "ERROR" else "yellow"
             msg = issue.message
             loc = f" ({issue.location})" if issue.location else ""
-            print(f"    • {_c(sev_str, colour)}  {msg}{loc}")
+            fix_tag = f"  {_c('[auto-fixable: run --fix]', 'green')}" if issue.fixable else ""
+            print(f"    • {_c(sev_str, colour)}  {msg}{loc}{fix_tag}")
+        print()
+
+
+_MANUAL_FIX_GUIDANCE = {
+    "1.1.1": "Add meaningful alt text to every image in your authoring tool (Word, InDesign, LaTeX \\includegraphics[alt={...}]).",
+    "1.3.1": "Re-author the PDF with proper tagging: use a tagged PDF workflow (LaTeX tagpdf, Adobe Acrobat, or Word's Accessibility Checker).",
+    "1.3.2": "Re-author the PDF ensuring the structure tree reading order matches the visual order.",
+    "1.4.3": "Change text or background colours in the source document to achieve ≥ 4.5:1 contrast (use https://webaim.org/resources/contrastchecker/).",
+    "1.4.5": "Replace images of text with real searchable text in the source document.",
+    "1.4.11": "Ensure form field borders and graphical UI components have ≥ 3:1 contrast against adjacent colours.",
+    "2.4.1": "Add PDF bookmarks (Outlines) via your authoring tool or with Adobe Acrobat's Bookmarks panel.",
+    "2.4.4": "Replace vague link text ('click here', 'read more') with descriptive text in the source document.",
+    "2.4.5": "Add a Table of Contents or bookmarks so users have multiple ways to navigate the document.",
+    "2.4.6": "Ensure headings are tagged (H1–H6) in proper hierarchical order in the structure tree.",
+    "3.1.2": "Tag passages in a different language with the correct /Lang attribute in your authoring tool.",
+}
+
+
+def _print_next_steps(all_results, already_fixed: bool):
+    """Print a clear 'What to do next' section separating auto-fixable from manual work."""
+    from checks.base import CheckStatus
+
+    failing = [r for r in all_results if r.status == CheckStatus.FAIL]
+    manual_review = [r for r in all_results if r.status == CheckStatus.MANUAL]
+
+    if not failing and not manual_review:
+        return
+
+    sep = "─" * _LINE_WIDTH
+    print(f"  {_c('── What To Do Next ────────────────────────────────────', 'bold')}")
+    print()
+
+    # --- Auto-fixable failures ------------------------------------------------
+    auto_fixable_issues = [
+        (r, i) for r in failing
+        for i in r.issues if i.fixable
+    ]
+    manual_issues = [
+        (r, i) for r in failing
+        for i in r.issues if not i.fixable
+    ]
+
+    if auto_fixable_issues and not already_fixed:
+        n = len(auto_fixable_issues)
+        checks = len({r.wcag_criterion for r, _ in auto_fixable_issues})
+        print(f"  {_c('1. Auto-fixable issues  →  run with --fix', 'green')}")
+        print(f"     {n} issue{'s' if n != 1 else ''} across {checks} "
+              f"criterion/criteria can be corrected automatically:")
+        seen = set()
+        for result, issue in auto_fixable_issues:
+            key = result.wcag_criterion
+            if key not in seen:
+                seen.add(key)
+                print(f"       • [{key}] {result.name}")
+        print()
+        print(f"     {_c('Run:', 'bold')} python check_pdf.py <your_pdf> --fix")
+        print()
+    elif auto_fixable_issues and already_fixed:
+        print(f"  {_c('✓ All auto-fixable issues were corrected by --fix.', 'green')}")
+        print()
+
+    # --- Manual failures ------------------------------------------------------
+    if manual_issues:
+        n = len(manual_issues)
+        checks = len({r.wcag_criterion for r, _ in manual_issues})
+        label = "2." if (auto_fixable_issues and not already_fixed) else "1."
+        print(f"  {_c(f'{label} Issues that require manual changes to the source document', 'red')}")
+        print(f"     {n} issue{'s' if n != 1 else ''} across {checks} "
+              f"criterion/criteria cannot be fixed automatically:")
+        print()
+        seen = set()
+        for result, issue in manual_issues:
+            key = result.wcag_criterion
+            if key not in seen:
+                seen.add(key)
+                guidance = _MANUAL_FIX_GUIDANCE.get(key, "Review the criterion and update the source document.")
+                print(f"       • [{key}] {result.name}")
+                print(f"         {guidance}")
+        print()
+
+    # --- Manual review items --------------------------------------------------
+    if manual_review:
+        n = len(manual_review)
+        label_n = sum([
+            bool(auto_fixable_issues and not already_fixed),
+            bool(manual_issues),
+        ]) + 1
+        print(f"  {_c(f'{label_n}. Items needing manual visual review', 'yellow')}")
+        print(f"     These {n} criterion/criteria cannot be verified automatically:")
+        for result in manual_review:
+            print(f"       • [{result.wcag_criterion}] {result.name}")
+            if result.issues:
+                print(f"         {result.issues[0].message[:100]}")
         print()
 
 
 def _print_summary(all_results, report_html, report_txt, output_pdf=None):
     """Print the complete console summary section."""
     from checks.base import CheckStatus
+
+    already_fixed = output_pdf is not None
 
     n_total  = len(all_results)
     n_pass   = sum(1 for r in all_results if r.status == CheckStatus.PASS)
@@ -250,17 +346,32 @@ def _print_summary(all_results, report_html, report_txt, output_pdf=None):
     pct_fail   = round(n_fail   / n_total * 100) if n_total else 0
     pct_manual = round(n_manual / n_total * 100) if n_total else 0
 
+    # Count auto-fixable vs manual-only failures
+    n_auto_fixable = sum(
+        1 for r in all_results if r.status == CheckStatus.FAIL
+        for i in r.issues if i.fixable
+    )
+    n_manual_only = sum(
+        1 for r in all_results if r.status == CheckStatus.FAIL
+        for i in r.issues if not i.fixable
+    )
+
     sep = "═" * _LINE_WIDTH
     print(f"  {sep}")
     print("  SUMMARY")
     print(f"  {sep}")
     print(f"    Passed:        {n_pass:3d} / {n_total}   ({pct_pass}%)")
-    print(f"    Failed:        {n_fail:3d} / {n_total}   ({pct_fail}%)")
-    print(f"    Needs Review:  {n_manual:3d} / {n_total}   ({pct_manual}%)")
+    print(f"    Failed:        {n_fail:3d} / {n_total}   ({pct_fail}%)", end="")
+    if n_fail > 0 and not already_fixed:
+        auto_note = f"  ← {n_auto_fixable} auto-fixable, {n_manual_only} need manual changes"
+        print(_c(auto_note, "yellow"), end="")
+    print()
+    print(f"    Needs Review:  {n_manual:3d} / {n_total}   ({pct_manual}%)  ← cannot be auto-verified")
     print(f"    Not Applicable:{n_na:3d} / {n_total}")
     print()
 
     _print_issue_details(all_results)
+    _print_next_steps(all_results, already_fixed)
 
     # --- Report paths ------------------------------------------------------
     print("  Reports saved:")
@@ -272,15 +383,20 @@ def _print_summary(all_results, report_html, report_txt, output_pdf=None):
 
     # --- Overall status line -----------------------------------------------
     if n_fail == 0 and n_manual == 0:
-        status_str = _c("✓ ALL CHECKS PASSED", "green")
+        status_str = _c("✓ ALL CHECKS PASSED — document meets WCAG 2.1 Level AA", "green")
     elif n_fail == 0:
         plural = "item" if n_manual == 1 else "items"
-        status_str = _c(f"⚠ MANUAL REVIEW NEEDED ({n_manual} {plural})", "yellow")
+        status_str = _c(f"⚠ MANUAL REVIEW NEEDED — {n_manual} {plural} require human verification", "yellow")
     else:
-        parts = [f"{n_fail} failure{'s' if n_fail != 1 else ''}"]
-        if n_manual:
-            parts.append(f"{n_manual} need manual review")
-        status_str = _c(f"✗ ISSUES FOUND ({', '.join(parts)})", "red")
+        auto_part = f"{n_auto_fixable} auto-fixable" if n_auto_fixable and not already_fixed else ""
+        manual_part = f"{n_manual_only} need manual document changes" if n_manual_only else ""
+        review_part = f"{n_manual} need manual review" if n_manual else ""
+        detail_parts = [p for p in [auto_part, manual_part, review_part] if p]
+        status_str = _c(
+            f"✗ ISSUES FOUND — not all issues can be auto-fixed "
+            f"({', '.join(detail_parts)})",
+            "red"
+        )
 
     print(f"  Overall status: {status_str}")
     print()
