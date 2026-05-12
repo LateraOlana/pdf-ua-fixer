@@ -7,7 +7,7 @@ Criteria covered
 1.4.5  Images of Text (AA)     — images must not be used where real text suffices
 """
 
-from typing import List
+from typing import List, Optional
 
 import pikepdf
 
@@ -15,6 +15,7 @@ from .base import (
     CheckResult,
     CheckStatus,
     Severity,
+    get_element_page,
     get_struct_tree_elements,
     try_resolve,
 )
@@ -92,6 +93,32 @@ def _image_xobjects_by_page(pdf: pikepdf.Pdf) -> List[int]:
     return counts
 
 
+def _xobject_names_by_page(pdf: pikepdf.Pdf) -> List[List[str]]:
+    """Return a list-of-lists of image XObject names, one inner list per page."""
+    result: List[List[str]] = []
+    for page in pdf.pages:
+        names: List[str] = []
+        try:
+            resources = page.get("/Resources")
+            if resources is not None:
+                resources = try_resolve(resources)
+                xobjects = resources.get("/XObject")
+                if xobjects is not None:
+                    xobjects = try_resolve(xobjects)
+                    if isinstance(xobjects, pikepdf.Dictionary):
+                        for name, xobj in xobjects.items():
+                            xobj = try_resolve(xobj)
+                            if not isinstance(xobj, pikepdf.Dictionary):
+                                continue
+                            subtype = xobj.get("/Subtype")
+                            if subtype is not None and str(try_resolve(subtype)) == "/Image":
+                                names.append(str(name))
+        except Exception:
+            pass
+        result.append(names)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # 1.1.1  Non-text Content (A)
 # ---------------------------------------------------------------------------
@@ -113,25 +140,32 @@ def _check_non_text_content(pdf: pikepdf.Pdf) -> CheckResult:
 
     # --- Branch 1: untagged document -----------------------------------------
     if not has_struct_tree:
-        page_image_counts = _image_xobjects_by_page(pdf)
-        for page_index, count in enumerate(page_image_counts):
-            for _ in range(count):
+        xobj_names_by_page = _xobject_names_by_page(pdf)
+        for page_idx, names in enumerate(xobj_names_by_page):
+            for xobj_name in names:
                 result.add_issue(
                     severity=Severity.ERROR,
                     message=(
-                        f"Image found on page {page_index + 1} but document is "
+                        f"Image found on page {page_idx + 1} but document is "
                         "untagged — no alt text possible. Tag the PDF and add "
                         "/Alt text to Figure elements."
                     ),
-                    location=f"Page {page_index + 1}",
+                    location=f"Image XObject '{xobj_name}' on page {page_idx + 1}",
                     fixable=False,
                 )
         return result
 
     # --- Branch 2: tagged document -------------------------------------------
     figures = get_struct_tree_elements(pdf, "/Figure")
+    total_figures = len(figures)
 
-    for figure in figures:
+    for idx, figure in enumerate(figures):
+        page_num: Optional[int] = get_element_page(pdf, figure)
+        if page_num is not None:
+            loc = f"Figure {idx + 1} of {total_figures} (page {page_num})"
+        else:
+            loc = f"Figure {idx + 1} of {total_figures} (structure tree)"
+
         alt = figure.get("/Alt")
 
         if alt is None:
@@ -142,7 +176,7 @@ def _check_non_text_content(pdf: pikepdf.Pdf) -> CheckResult:
                     "Figure element has no /Alt text (alternative text). "
                     "Screen readers will announce it as 'unlabeled image'."
                 ),
-                location="Figure in structure tree",
+                location=loc,
                 fixable=True,
             )
         else:
@@ -152,23 +186,22 @@ def _check_non_text_content(pdf: pikepdf.Pdf) -> CheckResult:
                 result.add_issue(
                     severity=Severity.INFO,
                     message="Figure marked as decorative (empty /Alt).",
-                    location="Figure in structure tree",
+                    location=loc,
                     fixable=False,
                 )
 
     # --- Orphaned-image check ------------------------------------------------
     total_images = _count_image_xobjects(pdf)
-    figure_count = len(figures)
 
-    if total_images > figure_count:
+    if total_images > total_figures:
         result.add_issue(
             severity=Severity.WARNING,
             message=(
                 f"Found {total_images} image XObject(s) but only "
-                f"{figure_count} Figure element(s) in structure tree. "
+                f"{total_figures} Figure element(s) in structure tree. "
                 "Some images may be untagged."
             ),
-            location="Document (XObject resources vs. structure tree)",
+            location="Multiple pages (see XObject count vs. Figure count)",
             fixable=False,
         )
 
@@ -195,7 +228,8 @@ def _check_images_of_text(pdf: pikepdf.Pdf) -> CheckResult:
     # This criterion cannot be fully automated; always set MANUAL.
     result.status = CheckStatus.MANUAL
 
-    total_images = _count_image_xobjects(pdf)
+    n_images = _count_image_xobjects(pdf)
+    n_pages = len(pdf.pages)
 
     result.add_issue(
         severity=Severity.INFO,
@@ -208,9 +242,10 @@ def _check_images_of_text(pdf: pikepdf.Pdf) -> CheckResult:
     result.add_issue(
         severity=Severity.INFO,
         message=(
-            f"Found {total_images} image(s) in this document. Review each to "
+            f"Found {n_images} image(s) in this document. Review each to "
             "ensure no image contains text that could be represented as live text."
         ),
+        location=f"Document ({n_images} image(s) found across {n_pages} pages)",
     )
 
     return result

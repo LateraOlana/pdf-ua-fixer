@@ -8,7 +8,7 @@ Covers:
 """
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional, Tuple
 
 import pikepdf
 
@@ -16,6 +16,7 @@ from checks.base import (
     CheckResult,
     CheckStatus,
     Severity,
+    get_element_page,
     try_resolve,
     walk_struct_tree,
 )
@@ -73,6 +74,48 @@ def _collect_tags(pdf: pikepdf.Pdf) -> List[str]:
     return tags
 
 
+def _collect_headings_with_pages(
+    pdf: pikepdf.Pdf,
+) -> List[Tuple[str, Optional[int]]]:
+    """Walk the structure tree and return (tag, page_num) for every heading element.
+
+    page_num is 1-based, or None if the page could not be determined.
+    Only /H, /H1–/H6 elements are collected, in document order.
+    """
+    root = pdf.Root.get("/StructTreeRoot")
+    if root is None:
+        return []
+
+    headings: List[Tuple[str, Optional[int]]] = []
+    visited: set = set()
+
+    def _visitor(element, _depth: int) -> None:
+        obj_id = getattr(element, "objgen", None)
+        if obj_id is not None:
+            if obj_id in visited:
+                return
+            visited.add(obj_id)
+
+        s_val = element.get("/S")
+        if s_val is None:
+            return
+        try:
+            tag = "/" + str(try_resolve(s_val)).lstrip("/")
+        except Exception:
+            return
+
+        if tag in _ALL_HEADING_TAGS:
+            page_num = get_element_page(pdf, element)
+            headings.append((tag, page_num))
+
+    try:
+        walk_struct_tree(try_resolve(root), _visitor)
+    except Exception:
+        pass
+
+    return headings
+
+
 def _has_struct_tree(pdf: pikepdf.Pdf) -> bool:
     try:
         return pdf.Root.get("/StructTreeRoot") is not None
@@ -98,6 +141,7 @@ def _check_131(pdf: pikepdf.Pdf) -> CheckResult:
         result.add_issue(
             Severity.ERROR,
             "PDF has no tag structure (StructTreeRoot). The document is not tagged.",
+            location="Document (no structure tree present)",
             fixable=False,
         )
         return result
@@ -114,6 +158,7 @@ def _check_131(pdf: pikepdf.Pdf) -> CheckResult:
                 f"No heading elements (H, H1–H6) found in a {page_count}-page document. "
                 "Headings help users understand document structure."
             ),
+            location="Document structure tree",
         )
 
     # --- /L and /LI consistency ---
@@ -144,7 +189,7 @@ def _check_131(pdf: pikepdf.Pdf) -> CheckResult:
         # Check whether this /L element has at least one /LI child.
         k_val = element.get("/K")
         if k_val is None:
-            list_elements_without_li.append("unknown location")
+            list_elements_without_li.append("List element in structure tree")
             return
 
         k_val = try_resolve(k_val)
@@ -167,7 +212,7 @@ def _check_131(pdf: pikepdf.Pdf) -> CheckResult:
                 break
 
         if not has_li:
-            list_elements_without_li.append("Document structure")
+            list_elements_without_li.append("List element in structure tree")
 
     try:
         walk_struct_tree(root, _list_visitor)
@@ -181,7 +226,7 @@ def _check_131(pdf: pikepdf.Pdf) -> CheckResult:
                 f"{len(list_elements_without_li)} list element(s) (/L) found that contain "
                 "no /LI children. List items should be tagged as /LI inside /L."
             ),
-            location="Document structure",
+            location="List element in structure tree",
         )
 
     if result.status == CheckStatus.PASS:
@@ -210,13 +255,13 @@ def _check_132(pdf: pikepdf.Pdf) -> CheckResult:
         result.add_issue(
             Severity.ERROR,
             "Reading order cannot be determined — document is not tagged.",
+            location="Document (untagged)",
             fixable=False,
         )
         return result
 
     # Check /Tabs entry on each page.
     tabs_ok_count = 0
-    tabs_missing_count = 0
 
     for n, page in enumerate(pdf.pages):
         try:
@@ -226,7 +271,6 @@ def _check_132(pdf: pikepdf.Pdf) -> CheckResult:
             tabs = None
 
         if tabs is None:
-            tabs_missing_count += 1
             result.add_issue(
                 Severity.WARNING,
                 (
@@ -287,50 +331,71 @@ def _check_246(pdf: pikepdf.Pdf) -> CheckResult:
         result.description = "Document has no structure tree; heading check skipped."
         return result
 
-    tags = _collect_tags(pdf)
-    heading_tags = [t for t in tags if t in _ALL_HEADING_TAGS]
+    # Collect (tag, page_num) tuples for all heading elements.
+    headings = _collect_headings_with_pages(pdf)
 
-    if not heading_tags:
+    if not headings:
         result.add_issue(
             Severity.WARNING,
             (
                 "No heading elements (H1–H6) found in structure tree. "
                 "Screen reader users cannot navigate by headings."
             ),
+            location="Document structure tree",
         )
         return result
 
     # Warn about generic /H (no level).
-    generic_h_count = sum(1 for t in heading_tags if t == "/H")
-    if generic_h_count:
+    generic_h = [(tag, pg) for tag, pg in headings if tag == "/H"]
+    if generic_h:
         result.add_issue(
             Severity.WARNING,
             (
-                f"{generic_h_count} generic /H heading(s) found with no numeric level. "
+                f"{len(generic_h)} generic /H heading(s) found with no numeric level. "
                 "Use /H1–/H6 instead so screen readers can convey hierarchy."
             ),
-            location="Document structure",
+            location="Document structure tree",
         )
 
     # Check for level skips among /H1–/H6 headings (in document order).
-    leveled = [t for t in tags if t in _LEVELED_HEADING_TAGS]
+    leveled = [(tag, pg) for tag, pg in headings if tag in _LEVELED_HEADING_TAGS]
 
     def _level(tag: str) -> int:
         return int(tag[-1])
 
-    prev_level: int | None = None
-    for tag in leveled:
+    prev_level: Optional[int] = None
+    prev_page: Optional[int] = None
+
+    for tag, page_num in leveled:
         cur_level = _level(tag)
         if prev_level is not None and cur_level > prev_level + 1:
+            # Build a precise location string using page numbers where available.
+            if prev_page is not None and page_num is not None:
+                if prev_page != page_num:
+                    location = (
+                        f"Page {prev_page} (H{prev_level}) → Page {page_num} (H{cur_level})"
+                    )
+                else:
+                    location = (
+                        f"Page {prev_page} (H{prev_level} followed by H{cur_level})"
+                    )
+            elif prev_page is not None:
+                location = f"Page {prev_page} (H{prev_level} → H{cur_level})"
+            elif page_num is not None:
+                location = f"Page {page_num} (H{prev_level} → H{cur_level})"
+            else:
+                location = "Document structure tree"
+
             result.add_issue(
                 Severity.WARNING,
                 (
                     f"Heading levels skip from H{prev_level} to H{cur_level} — "
                     "this disrupts navigation for screen reader users."
                 ),
-                location="Document structure",
+                location=location,
             )
         prev_level = cur_level
+        prev_page = page_num
 
     # Text-content check is complex (requires MCID/content-stream correlation);
     # flag for manual review instead.
@@ -365,13 +430,13 @@ def _check_411(pdf: pikepdf.Pdf) -> CheckResult:
             result.add_issue(
                 Severity.WARNING,
                 "Document /Root has no /Type entry.",
-                location="/Root",
+                location="Document root",
             )
     except Exception as exc:
         result.add_issue(
             Severity.ERROR,
             f"Unable to access PDF Root dictionary: {exc}",
-            location="/Root",
+            location="Document root",
         )
         return result
 
@@ -383,11 +448,13 @@ def _check_411(pdf: pikepdf.Pdf) -> CheckResult:
                 result.add_issue(
                     Severity.WARNING,
                     f"pikepdf structural warning: {w}",
+                    location="Document root",
                 )
         except Exception as exc:
             result.add_issue(
                 Severity.ERROR,
                 f"pikepdf reported a structural error: {exc}",
+                location="Document root",
             )
 
     # 3. Attempt to iterate all objects to surface duplicate / corrupt entries.
@@ -401,6 +468,7 @@ def _check_411(pdf: pikepdf.Pdf) -> CheckResult:
                         result.add_issue(
                             Severity.ERROR,
                             f"Duplicate object number detected: {og}",
+                            location="Document root",
                         )
                     seen_objgens.add(og)
             except Exception:
@@ -409,6 +477,7 @@ def _check_411(pdf: pikepdf.Pdf) -> CheckResult:
         result.add_issue(
             Severity.WARNING,
             f"Could not iterate PDF object table: {exc}",
+            location="Document root",
         )
 
     if result.status == CheckStatus.PASS:

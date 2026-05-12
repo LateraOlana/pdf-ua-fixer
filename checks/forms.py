@@ -103,6 +103,34 @@ def _field_name(field: pikepdf.Dictionary) -> str:
     return _str_val(try_resolve(t_raw))
 
 
+def _field_page(pdf: pikepdf.Pdf, field: pikepdf.Dictionary) -> Optional[int]:
+    """Find page number (1-based) of a form field's first widget annotation."""
+    try:
+        # Field may itself be a widget, or have /Kids that are widgets
+        widgets = []
+        ft = field.get("/FT")
+        if ft:  # it's a terminal field
+            widgets = [field]
+        kids = try_resolve(field.get("/Kids"))
+        if kids and isinstance(kids, pikepdf.Array):
+            for kid in kids:
+                kid = try_resolve(kid)
+                if isinstance(kid, pikepdf.Dictionary) and kid.get("/Subtype") == pikepdf.Name("/Widget"):
+                    widgets.append(kid)
+        for widget in widgets:
+            pg = try_resolve(widget.get("/P"))  # /P = page reference on widget
+            if pg:
+                for i, page in enumerate(pdf.pages):
+                    try:
+                        if page.objgen == pg.objgen:
+                            return i + 1
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return None
+
+
 def _pages_with_form_fields(pdf: pikepdf.Pdf) -> List[Tuple[int, bool]]:
     """Return (page_index, has_widget) pairs for pages that contain widgets.
 
@@ -164,25 +192,28 @@ def _check_name_role_value(pdf: pikepdf.Pdf) -> CheckResult:
         ft_raw = try_resolve(field.get("/FT"))
         tu_raw = field.get("/TU")
         name = _field_name(field)
+        page_num = _field_page(pdf, field)
 
         # --- /T missing: field is unidentifiable ---------------------
         if t_raw is None:
+            location = f"Form field on page {page_num or 'unknown'} (unnamed field)"
             result.add_issue(
                 Severity.ERROR,
                 "Form field has no name (/T). Screen readers cannot identify this field.",
-                location=None,
+                location=location,
                 fixable=False,
             )
 
         # --- /TU (tooltip / accessible label) ------------------------
         if tu_raw is None:
             fields_without_tu += 1
+            location = f"Page {page_num or '?'} — field: '{name}'"
             result.add_issue(
                 Severity.WARNING,
                 f"Form field '{name}' has no tooltip (/TU). The accessible name "
                 "will fall back to /T which may not be descriptive. "
                 "Add a human-readable tooltip.",
-                location=None,
+                location=location,
                 fixable=False,
             )
         else:
@@ -201,7 +232,7 @@ def _check_name_role_value(pdf: pikepdf.Pdf) -> CheckResult:
                     Severity.WARNING,
                     f"Button/checkbox field '{name}' has a /V value that is not "
                     "a PDF Name. Expected something like /Yes or /Off.",
-                    location=None,
+                    location=f"Page {page_num or '?'} — field: '{name}'",
                     fixable=False,
                 )
 
@@ -216,7 +247,7 @@ def _check_name_role_value(pdf: pikepdf.Pdf) -> CheckResult:
                             Severity.INFO,
                             f"Text field '{name}' has very short MaxLen ({maxlen}). "
                             "Verify this is intentional.",
-                            location=None,
+                            location=f"Page {page_num or '?'} — field: '{name}'",
                             fixable=False,
                         )
                 except (TypeError, ValueError):

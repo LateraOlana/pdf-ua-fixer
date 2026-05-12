@@ -382,23 +382,41 @@ def _print_summary(all_results, report_html, report_txt, output_pdf=None):
     print()
 
     # --- Overall status line -----------------------------------------------
-    if n_fail == 0 and n_manual == 0:
-        status_str = _c("✓ ALL CHECKS PASSED — document meets WCAG 2.1 Level AA", "green")
-    elif n_fail == 0:
-        plural = "item" if n_manual == 1 else "items"
-        status_str = _c(f"⚠ MANUAL REVIEW NEEDED — {n_manual} {plural} require human verification", "yellow")
-    else:
-        auto_part = f"{n_auto_fixable} auto-fixable" if n_auto_fixable and not already_fixed else ""
-        manual_part = f"{n_manual_only} need manual document changes" if n_manual_only else ""
-        review_part = f"{n_manual} need manual review" if n_manual else ""
-        detail_parts = [p for p in [auto_part, manual_part, review_part] if p]
-        status_str = _c(
-            f"✗ ISSUES FOUND — not all issues can be auto-fixed "
-            f"({', '.join(detail_parts)})",
-            "red"
-        )
+    sep2 = "─" * _LINE_WIDTH
+    print(f"  {sep2}")
 
-    print(f"  Overall status: {status_str}")
+    if n_fail == 0 and n_manual == 0:
+        print(f"  Overall status: {_c('✓ ALL CHECKS PASSED', 'green')}")
+        print(f"  {_c('This document meets WCAG 2.1 Level AA requirements.', 'green')}")
+
+    elif n_fail == 0:
+        print(f"  Overall status: {_c('⚠  MANUAL REVIEW NEEDED', 'yellow')}")
+        print(f"  All automated checks passed, but {n_manual} criterion/criteria "
+              f"require human verification.")
+        print(f"  See 'What To Do Next' above for details.")
+
+    else:
+        fail_word  = "check" if n_fail  == 1 else "checks"
+        rev_word   = "criterion" if n_manual == 1 else "criteria"
+        print(f"  Overall status: {_c('✗  ISSUES FOUND', 'red')}")
+        print(f"  {_c(str(n_fail), 'red')} {fail_word} failed"
+              + (f"  •  {_c(str(n_manual), 'yellow')} {rev_word} need manual review" if n_manual else ""))
+        print()
+        if already_fixed:
+            if n_auto_fixable == 0:
+                print(f"  {_c('✓', 'green')} Auto-fixable issues were corrected by --fix.")
+            print(f"  {_c('✗', 'red')} {n_manual_only} issue(s) in {n_fail} check(s) require "
+                  f"manual changes to the source document.")
+        else:
+            if n_auto_fixable:
+                print(f"  {_c('→', 'green')} {n_auto_fixable} issue(s) are auto-fixable — "
+                      f"run: python check_pdf.py <pdf> {_c('--fix', 'bold')}")
+            if n_manual_only:
+                print(f"  {_c('→', 'red')} {n_manual_only} issue(s) require manual changes "
+                      f"to the source document")
+        print(f"  See 'What To Do Next' above for step-by-step guidance.")
+
+    print(f"  {sep2}")
     print()
 
 

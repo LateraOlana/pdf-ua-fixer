@@ -9,6 +9,7 @@ from checks.base import (
     CheckResult,
     CheckStatus,
     Severity,
+    get_element_page,
     get_struct_tree_elements,
     try_resolve,
     walk_struct_tree,
@@ -164,11 +165,14 @@ def _gather_tr_elements(table_element: Any) -> List[Any]:
 
 def _check_table(
     result: CheckResult,
+    pdf: pikepdf.Pdf,
     table_idx: int,
     table_element: Any,
 ) -> None:
     """Run all sub-checks for a single table element."""
-    label = f"Table {table_idx + 1}"
+    page_num = get_element_page(pdf, table_element)
+    page_str = f"page {page_num}" if page_num else "unknown page"
+    table_label = f"Table {table_idx + 1} (on {page_str})"
 
     # ------------------------------------------------------------------
     # (a) No rows
@@ -177,8 +181,8 @@ def _check_table(
     if not trs:
         result.add_issue(
             Severity.ERROR,
-            f"{label} has no row (/TR) elements.",
-            location=label,
+            f"{table_label} has no row (/TR) elements.",
+            location=f"{table_label} — no /TR row elements found",
         )
         # Nothing more to check without rows
         return
@@ -186,59 +190,67 @@ def _check_table(
     # ------------------------------------------------------------------
     # (b) TH cells missing /Scope  &  (d) unexpected /Scope values
     # ------------------------------------------------------------------
-    all_th = _collect_all_descendants(table_element, "/TH")
+    # Walk each TR in order so we can report row numbers for missing-scope issues.
     reported_empty_cells = False  # only report empty-cell INFO once per table
 
-    for th in all_th:
-        scope_val = _th_has_scope(th)
-        if scope_val is None:
-            result.add_issue(
-                Severity.ERROR,
-                (
-                    f"{label}: TH header cell is missing /Scope attribute. "
-                    "Screen readers cannot associate headers with data cells."
-                ),
-                location=label,
-                fixable=True,
-            )
-        elif scope_val not in _VALID_SCOPES:
-            result.add_issue(
-                Severity.WARNING,
-                (
-                    f"{label}: TH header cell has unexpected /Scope value "
-                    f"'{scope_val}'. Expected /Column, /Row, /Both, or /None."
-                ),
-                location=label,
-            )
+    all_th_flat: List[Any] = []  # for the no-header-cells check below
+
+    for row_idx, tr in enumerate(trs):
+        th_cells_in_row = _collect_children(tr, "/TH")
+        all_th_flat.extend(th_cells_in_row)
+
+        for th in th_cells_in_row:
+            scope_val = _th_has_scope(th)
+            if scope_val is None:
+                result.add_issue(
+                    Severity.ERROR,
+                    (
+                        f"{table_label}: TH header cell at row {row_idx + 1} is"
+                        " missing /Scope attribute. Screen readers cannot"
+                        " associate headers with data cells."
+                    ),
+                    location=f"{table_label}, header cell (TH) at row {row_idx + 1}",
+                    fixable=True,
+                )
+            elif scope_val not in _VALID_SCOPES:
+                result.add_issue(
+                    Severity.WARNING,
+                    (
+                        f"{table_label}: TH header cell at row {row_idx + 1} has"
+                        f" unexpected /Scope value '{scope_val}'."
+                        " Expected /Column, /Row, /Both, or /None."
+                    ),
+                    location=f"{table_label}, TH cell",
+                )
 
     # ------------------------------------------------------------------
     # (c) No header cells at all (more than 1 row, zero TH elements)
     # ------------------------------------------------------------------
-    if len(all_th) == 0 and len(trs) > 1:
+    if len(all_th_flat) == 0 and len(trs) > 1:
         result.add_issue(
             Severity.WARNING,
             (
-                f"{label} has no header cells (/TH). Consider marking header "
-                "row/column cells as TH with appropriate /Scope."
+                f"{table_label} has no header cells (/TH). Consider marking"
+                " header row/column cells as TH with appropriate /Scope."
             ),
-            location=label,
+            location=f"{table_label} — no header cells found",
         )
 
     # ------------------------------------------------------------------
     # (e) Empty cells (/TD or /TH with no content)
     # ------------------------------------------------------------------
     all_td = _collect_all_descendants(table_element, "/TD")
-    all_cells = all_th + all_td
+    all_cells = all_th_flat + all_td
     for cell in all_cells:
         if _cell_is_empty(cell):
             if not reported_empty_cells:
                 result.add_issue(
                     Severity.INFO,
                     (
-                        f"{label} contains empty cells — verify these are "
-                        "intentional."
+                        f"{table_label} contains empty cells — verify these are"
+                        " intentional."
                     ),
-                    location=label,
+                    location=f"{table_label} — empty cell(s) present",
                 )
                 reported_empty_cells = True
             break  # one INFO notice per table is enough
@@ -253,10 +265,10 @@ def _check_table(
             result.add_issue(
                 Severity.INFO,
                 (
-                    f"Large table (>3x3) has no /Caption element — consider "
-                    "adding a caption describing the table."
+                    f"Large table (>3x3) has no /Caption element — consider"
+                    " adding a caption describing the table."
                 ),
-                location=label,
+                location=table_label,
             )
 
 
@@ -294,7 +306,7 @@ def run(pdf: pikepdf.Pdf, pdf_path: str = "") -> List[CheckResult]:
     result = _make_result(CheckStatus.PASS)
 
     for table_idx, table_element in enumerate(tables):
-        _check_table(result, table_idx, try_resolve(table_element))
+        _check_table(result, pdf, table_idx, try_resolve(table_element))
 
     # Status is escalated automatically by add_issue; set description now.
     if result.status == CheckStatus.FAIL:

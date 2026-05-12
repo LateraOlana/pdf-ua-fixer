@@ -106,7 +106,9 @@ def _check_144(pdf: pikepdf.Pdf, pdf_path: str) -> CheckResult:
                     # Unicode is unreliable for AT.  Warn for all non-Type1 fonts and
                     # for non-standard Type1 fonts.
                     font_name = font_key.lstrip("/")
+                    subtype_display = subtype.lstrip("/") if subtype else "unknown"
                     any_missing_unicode = True
+                    location = f"Page {page_idx+1} — font '{font_name}' (subtype: {subtype_display})"
                     result.add_issue(
                         Severity.WARNING,
                         (
@@ -114,7 +116,7 @@ def _check_144(pdf: pikepdf.Pdf, pdf_path: str) -> CheckResult:
                             "Text may not be extractable, searchable, or read by "
                             "screen readers."
                         ),
-                        location=page_label,
+                        location=location,
                         fixable=False,
                     )
 
@@ -140,6 +142,7 @@ def _check_144(pdf: pikepdf.Pdf, pdf_path: str) -> CheckResult:
                         "The document may consist of scanned images without an OCR "
                         "text layer."
                     ),
+                    location="First 3 pages (text extraction failed)",
                     fixable=False,
                 )
         except Exception:
@@ -186,11 +189,12 @@ def _check_145(pdf: pikepdf.Pdf, pdf_path: str) -> CheckResult:
             import pypdf  # type: ignore[import]
 
             reader = pypdf.PdfReader(pdf_path)
+            n_pages = len(pdf.pages)
             total_chars = sum(
                 len(reader.pages[i].extract_text() or "")
-                for i in range(min(3, len(reader.pages)))
+                for i in range(min(3, n_pages))
             )
-            if total_chars < 10 and len(pdf.pages) > 0:
+            if total_chars < 10 and n_pages > 0:
                 scanned_detected = True
                 result.add_issue(
                     Severity.ERROR,
@@ -200,6 +204,7 @@ def _check_145(pdf: pikepdf.Pdf, pdf_path: str) -> CheckResult:
                         "text layer. All text content is inaccessible to assistive "
                         "technologies and fails 1.4.5."
                     ),
+                    location=f"Document — {n_pages} pages, {total_chars} chars extracted",
                     fixable=False,
                 )
         except Exception:

@@ -105,8 +105,13 @@ def _check_link_purpose(pdf: pikepdf.Pdf) -> CheckResult:
         result.description = "No link annotations found in document."
         return result
 
+    # Track per-page link counter so each link gets a unique index on its page.
+    link_num_by_page: dict[int, int] = {}
+
     for page_idx, annot in links:
-        page_label = f"Page {page_idx + 1}"
+        # Increment per-page link counter
+        link_num_by_page[page_idx] = link_num_by_page.get(page_idx, 0) + 1
+        link_num = link_num_by_page[page_idx]
 
         # --- gather accessible text fields ---
         contents_raw = try_resolve(annot.get("/Contents"))
@@ -133,13 +138,18 @@ def _check_link_purpose(pdf: pikepdf.Pdf) -> CheckResult:
             if action_type == pikepdf.Name("/URI"):
                 uri = _str_val(try_resolve(action.get("/URI")))
 
+        # Build a destination suffix for location strings (truncate long URLs)
+        dest_str = ""
+        if uri:
+            dest_str = f" → {uri[:60]}"
+
         # --- rule: no destination at all ---
         if not has_dest:
             result.add_issue(
                 Severity.WARNING,
-                f"Link annotation on page {page_idx + 1} has no destination"
-                " — it may be broken.",
-                location=page_label,
+                f"Link annotation on page {page_idx + 1} (link #{link_num})"
+                " has no destination — it may be broken.",
+                location=f"Page {page_idx + 1}, link #{link_num} (no destination)",
                 fixable=False,
             )
             continue
@@ -148,10 +158,10 @@ def _check_link_purpose(pdf: pikepdf.Pdf) -> CheckResult:
         if uri and not primary_text:
             result.add_issue(
                 Severity.WARNING,
-                f"Link on page {page_idx + 1} points to {uri!r} but has no"
-                " accessible description (/Contents or /TU). Screen readers"
-                " may only announce the raw URL.",
-                location=page_label,
+                f"Link on page {page_idx + 1} (link #{link_num}) points to"
+                f" {uri!r} but has no accessible description (/Contents or"
+                " /TU). Screen readers may only announce the raw URL.",
+                location=f"Page {page_idx + 1}, link #{link_num} → {uri[:50]}",
                 fixable=False,
             )
             continue
@@ -160,10 +170,13 @@ def _check_link_purpose(pdf: pikepdf.Pdf) -> CheckResult:
         if primary_text and _is_vague(primary_text):
             result.add_issue(
                 Severity.WARNING,
-                f"Link on page {page_idx + 1} has non-descriptive text:"
-                f" {primary_text!r}. Replace with descriptive text indicating"
-                " link destination.",
-                location=page_label,
+                f"Link on page {page_idx + 1} (link #{link_num}) has"
+                f" non-descriptive text: {primary_text!r}. Replace with"
+                " descriptive text indicating link destination.",
+                location=(
+                    f"Page {page_idx + 1}, link #{link_num}"
+                    f" (text: '{primary_text[:40]}')"
+                ),
                 fixable=False,
             )
 

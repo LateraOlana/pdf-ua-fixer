@@ -85,6 +85,17 @@ def _check_page_titled(pdf: pikepdf.Pdf) -> CheckResult:
                 'Document title is missing or empty. '
                 'Neither docinfo /Title nor XMP dc:title is set.'
             ),
+            location='PDF document metadata (/Info /Title and XMP dc:title both absent)',
+            fixable=True,
+        )
+    elif title_docinfo and not title_xmp:
+        result.add_issue(
+            severity=Severity.WARNING,
+            message=(
+                'Document title is present in docinfo /Title but absent from XMP. '
+                'PDF/UA requires the title to be declared in XMP dc:title.'
+            ),
+            location='XMP metadata (dc:title missing; /Info /Title present)',
             fixable=True,
         )
     return result
@@ -118,6 +129,7 @@ def _check_language_of_page(pdf: pikepdf.Pdf) -> CheckResult:
         result.add_issue(
             severity=Severity.ERROR,
             message='PDF catalog /Lang entry is missing or empty.',
+            location='PDF document catalog (/Lang entry missing)',
             fixable=True,
         )
         return result
@@ -129,6 +141,7 @@ def _check_language_of_page(pdf: pikepdf.Pdf) -> CheckResult:
                 f'PDF catalog /Lang value {lang!r} does not look like a valid '
                 'BCP-47 language tag. Expected format: "en", "en-US", "fr-CA", etc.'
             ),
+            location=f"PDF document catalog (/Lang = '{lang}' — invalid BCP-47 tag)",
             fixable=True,
         )
 
@@ -200,6 +213,7 @@ def _check_language_of_parts(pdf: pikepdf.Pdf) -> CheckResult:
                 'the catalog default, those elements must be tagged with /Lang. '
                 'Manual review required.'
             ),
+            location='Structure tree (no per-element /Lang attributes found)',
         )
     # If /Lang entries are present we record them informatively but cannot
     # programmatically verify that *every* language-change span is tagged.
@@ -241,13 +255,24 @@ def _check_pdfua_identifier(pdf: pikepdf.Pdf) -> CheckResult:
     except Exception:
         pass
 
-    if value != '1':
+    if value is None:
         result.add_issue(
             severity=Severity.ERROR,
             message=(
-                f'PDF/UA-1 identifier missing or incorrect. '
+                'PDF/UA-1 identifier missing or incorrect. '
                 f'pdfuaid:part = {value!r} (expected "1").'
             ),
+            location='XMP metadata packet (pdfuaid:part not set)',
+            fixable=True,
+        )
+    elif value != '1':
+        result.add_issue(
+            severity=Severity.ERROR,
+            message=(
+                'PDF/UA-1 identifier missing or incorrect. '
+                f'pdfuaid:part = {value!r} (expected "1").'
+            ),
+            location=f"XMP metadata (pdfuaid:part = '{value}', expected '1')",
             fixable=True,
         )
 

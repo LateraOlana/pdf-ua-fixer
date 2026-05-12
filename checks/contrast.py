@@ -77,18 +77,46 @@ def _operands_as_floats(operands: list) -> List[float]:
     return result
 
 
+def _extract_text_from_operands(operands: list) -> str:
+    """Extract a text string from Tj or TJ operands, returning '' on failure."""
+    if not operands:
+        return ""
+    try:
+        first = operands[0]
+        # TJ takes an Array; Tj takes a String
+        if isinstance(first, pikepdf.Array):
+            parts = []
+            for item in first:
+                if isinstance(item, (pikepdf.String, bytes)):
+                    try:
+                        parts.append(bytes(item).decode("utf-8", errors="replace"))
+                    except Exception:
+                        pass
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "".join(parts)
+        elif isinstance(first, pikepdf.String):
+            return bytes(first).decode("utf-8", errors="replace")
+        elif isinstance(first, str):
+            return first
+    except Exception:
+        pass
+    return ""
+
+
 def _parse_colours_near_text(
     page: pikepdf.Page,
-) -> List[Tuple[str, Tuple[float, ...]]]:
-    """Return a list of (colour_space, values) tuples for fills active during text ops.
+) -> List[Tuple[str, Tuple[float, ...], str]]:
+    """Return a list of (colour_space, values, text_snippet) tuples for fills
+    active during text ops.
 
     Each tuple describes the *fill* colour that was in effect when a BT block
-    was entered on this page.  Only explicit colour operators are tracked; if no
-    colour has been set by the time a BT is reached the list entry is omitted.
+    was entered on this page, along with a short snippet of text found in that
+    BT block (or '' if none was found).
 
     Returns an empty list when the content stream cannot be parsed.
     """
-    found: List[Tuple[str, Tuple[float, ...]]] = []
+    found: List[Tuple[str, Tuple[float, ...], str]] = []
 
     try:
         instructions = list(pikepdf.parse_content_stream(page))
@@ -99,21 +127,42 @@ def _parse_colours_near_text(
     current_fill: Optional[Tuple[str, Tuple[float, ...]]] = None
     in_text_block = False
 
+    # When we enter a BT block we record the fill colour at that moment and
+    # the index in `found` where it will be stored, then scan the rest of the
+    # block for a Tj/TJ to capture a snippet.
+    pending_idx: Optional[int] = None
+
     for operands, operator in instructions:
         op_bytes = bytes(operator)
 
         if op_bytes == _TEXT_BEGIN:
             in_text_block = True
             if current_fill is not None:
-                found.append(current_fill)
+                found.append((current_fill[0], current_fill[1], ""))
+                pending_idx = len(found) - 1
+            else:
+                pending_idx = None
             continue
 
         if op_bytes == _TEXT_END:
             in_text_block = False
+            pending_idx = None
+            continue
+
+        # Inside a text block: look for Tj / TJ to capture a text snippet.
+        if in_text_block and pending_idx is not None and op_bytes in (b"Tj", b"TJ"):
+            snippet = _extract_text_from_operands(list(operands))
+            snippet = snippet.strip()
+            if snippet:
+                # Update the already-appended tuple with the snippet.
+                cs, vals, _ = found[pending_idx]
+                found[pending_idx] = (cs, vals, snippet)
+                # Only capture the first text run per BT block.
+                pending_idx = None
             continue
 
         # Update current fill colour from colour operators.
-        vals = _operands_as_floats(operands)
+        vals = _operands_as_floats(list(operands))
 
         if op_bytes == b"g" and len(vals) >= 1:
             current_fill = ("gray", (vals[0],))
@@ -146,23 +195,32 @@ def _check_143(pdf: pikepdf.Pdf) -> CheckResult:
     clear_failure = False
 
     for page_idx, page in enumerate(pdf.pages):
-        page_label = f"Page {page_idx + 1}"
-
         try:
             colour_events = _parse_colours_near_text(page)
         except Exception:
             colour_events = []
 
-        for colour_space, values in colour_events:
+        for colour_space, values, snippet in colour_events:
             if colour_space == "gray":
-                gray_value = values[0]
+                gray_val = values[0]
                 # Only flag values in the light range (likely light text on white).
                 # Dark grays (< 0.3) have plenty of contrast against white.
-                if gray_value > 0.7:
+                if gray_val > 0.7:
                     # Treat the gray value as relative luminance (approximate).
-                    ratio = _contrast_against_white(gray_value)
+                    ratio = _contrast_against_white(gray_val)
                     if ratio < 4.5:
                         clear_failure = True
+                        if snippet:
+                            location = (
+                                f"Page {page_idx+1} — text near: "
+                                f"'{snippet[:30]}' "
+                                f"(colour grey {gray_val:.2f}, ~{ratio:.1f}:1 contrast)"
+                            )
+                        else:
+                            location = (
+                                f"Page {page_idx+1} — grey text "
+                                f"(value {gray_val:.2f}, ~{ratio:.1f}:1 contrast)"
+                            )
                         result.add_issue(
                             Severity.ERROR,
                             (
@@ -170,7 +228,7 @@ def _check_143(pdf: pikepdf.Pdf) -> CheckResult:
                                 f"(estimated ratio {ratio:.1f}:1, requires 4.5:1). "
                                 "Verify with a contrast checker tool."
                             ),
-                            location=page_label,
+                            location=location,
                             fixable=False,
                         )
 
@@ -182,6 +240,18 @@ def _check_143(pdf: pikepdf.Pdf) -> CheckResult:
                 if ratio < 4.5:
                     # Only warn — we don't know the actual background colour.
                     clear_failure = True
+                    colour_desc = f"RGB({r:.2f},{g:.2f},{b:.2f})"
+                    if snippet:
+                        location = (
+                            f"Page {page_idx+1} — text near: "
+                            f"'{snippet[:30]}' "
+                            f"(colour {colour_desc}, ~{ratio:.1f}:1 contrast)"
+                        )
+                    else:
+                        location = (
+                            f"Page {page_idx+1} — {colour_desc}, "
+                            f"~{ratio:.1f}:1 contrast"
+                        )
                     result.add_issue(
                         Severity.WARNING,
                         (
@@ -190,7 +260,7 @@ def _check_143(pdf: pikepdf.Pdf) -> CheckResult:
                             "against a white background (requires 4.5:1). "
                             "Verify the actual background colour with a contrast checker."
                         ),
-                        location=page_label,
+                        location=location,
                         fixable=False,
                     )
 

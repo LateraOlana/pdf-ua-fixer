@@ -97,6 +97,29 @@ def try_resolve(obj: Any) -> Any:
         return obj
 
 
+def get_element_page(pdf: pikepdf.Pdf, element: Any) -> Optional[int]:
+    """Return the 1-based page number for a structure-tree element.
+
+    Structure elements carry a ``/Pg`` indirect reference to their page.
+    We resolve it and compare ``objgen`` against ``pdf.pages`` to find the
+    index.  Returns ``None`` if the page cannot be determined.
+    """
+    try:
+        pg = element.get("/Pg")
+        if pg is None:
+            return None
+        pg = try_resolve(pg)
+        for i, page in enumerate(pdf.pages):
+            try:
+                if page.objgen == pg.objgen:
+                    return i + 1
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def get_struct_tree_elements(
     pdf: pikepdf.Pdf,
     tag_name: str,

@@ -114,14 +114,20 @@ def _check_bypass_blocks(pdf: pikepdf.Pdf) -> CheckResult:
         return result
 
     has_bookmarks = _has_visible_bookmarks(pdf)
+    has_outlines_entry = pdf.Root.get("/Outlines") is not None
 
     if 2 <= n_pages <= 9:
         if not has_bookmarks:
+            location = (
+                f"Document ({n_pages} pages, no /Outlines entry)"
+                if not has_outlines_entry
+                else f"Document ({n_pages} pages)"
+            )
             result.add_issue(
                 Severity.WARNING,
                 f"Document has {n_pages} pages but no bookmarks (Outlines). "
                 "Consider adding bookmarks to help users navigate.",
-                location=None,
+                location=location,
                 fixable=False,
             )
         else:
@@ -131,12 +137,17 @@ def _check_bypass_blocks(pdf: pikepdf.Pdf) -> CheckResult:
 
     else:  # n_pages >= 10
         if not has_bookmarks:
+            location = (
+                f"Document ({n_pages} pages, no /Outlines entry)"
+                if not has_outlines_entry
+                else f"Document ({n_pages} pages)"
+            )
             result.add_issue(
                 Severity.ERROR,
                 f"Document has {n_pages} pages but no bookmarks/outline. "
                 "Users of assistive technology cannot skip repeated headers or "
                 "navigate by section. Add bookmarks.",
-                location=None,
+                location=location,
                 fixable=False,
             )
         else:
@@ -188,6 +199,8 @@ def _check_multiple_ways(pdf: pikepdf.Pdf) -> CheckResult:
     if has_toc:
         methods.append("table of contents (structure element)")
 
+    doc_location = f"Document ({n_pages} pages)"
+
     if navigation_count >= 2:
         result.description = (
             f"Document provides {navigation_count} navigation method(s): "
@@ -200,7 +213,7 @@ def _check_multiple_ways(pdf: pikepdf.Pdf) -> CheckResult:
             Severity.WARNING,
             f"Document provides only one navigation method ({methods[0]}). "
             "Consider adding a table of contents or bookmarks to offer multiple ways to navigate.",
-            location=None,
+            location=doc_location,
             fixable=False,
         )
         result.description = (
@@ -212,10 +225,23 @@ def _check_multiple_ways(pdf: pikepdf.Pdf) -> CheckResult:
             Severity.ERROR,
             "Document has no navigation aids (no bookmarks, no page labels, no TOC). "
             "Users of assistive technology have no way to navigate the document.",
-            location=None,
+            location=doc_location,
             fixable=False,
         )
         result.description = "No navigation aids found in document."
+
+    # If a TOC structure element was found, note its location for transparency.
+    if has_toc:
+        from checks.base import Issue
+        result.issues.append(
+            Issue(
+                wcag_criterion="2.4.5",
+                severity=Severity.INFO,
+                message="A /TOC structure element was found in the document structure tree.",
+                location="Document structure tree",
+                fixable=False,
+            )
+        )
 
     return result
 
