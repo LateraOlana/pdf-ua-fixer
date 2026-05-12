@@ -47,18 +47,11 @@ SEVERITY_LABEL = {
     Severity.INFO:    "INFO",
 }
 
-_MANUAL_FIX_GUIDANCE = {
-    "1.1.1":  "Add meaningful alt text to every image in your authoring tool (Word, InDesign, LaTeX \\includegraphics[alt={...}]).",
-    "1.3.1":  "Re-author the PDF with proper tagging: use a tagged PDF workflow (LaTeX tagpdf, Adobe Acrobat, or Word).",
-    "1.3.2":  "Re-author the PDF ensuring the structure tree reading order matches the visual order.",
-    "1.4.3":  "Change text or background colours in the source document to achieve >= 4.5:1 contrast (https://webaim.org/resources/contrastchecker/).",
-    "1.4.5":  "Replace images of text with real searchable text in the source document.",
-    "1.4.11": "Ensure form field borders and UI components have >= 3:1 contrast against adjacent colours.",
-    "2.4.1":  "Add PDF bookmarks (Outlines) via your authoring tool or with Adobe Acrobat's Bookmarks panel.",
-    "2.4.4":  "Replace vague link text ('click here', 'read more') with descriptive text in the source document.",
-    "2.4.5":  "Add a Table of Contents or bookmarks so users have multiple ways to navigate the document.",
-    "2.4.6":  "Ensure headings are tagged (H1-H6) in proper hierarchical order in the structure tree.",
-    "3.1.2":  "Tag passages in a different language with the correct /Lang attribute in your authoring tool.",
+# Status tags for the per-fixer line in the "Fixes Applied" section.
+_FIX_STATUS_TAG = {
+    "changed":    "CHANGED  ",
+    "already_ok": "NO CHANGE",
+    "error":      "ERROR    ",
 }
 
 
@@ -369,33 +362,48 @@ def _build_manual_review(results: List[CheckResult]) -> str:
     return "\n".join(lines)
 
 
-def _build_auto_fixed(results: List[CheckResult]) -> str:
-    """Build the 'What Was Automatically Fixed' section."""
-    lines = [_section("WHAT WAS AUTOMATICALLY FIXED"), ""]
+def _build_fixes_applied(fix_results: list | None) -> str:
+    """Build the 'Fixes Applied by --fix' section from the apply_fixes() output.
 
-    fixed_issues: list[tuple[CheckResult, Issue]] = []
-    for result in results:
-        for issue in (getattr(result, "issues", []) or []):
-            if getattr(issue, "auto_fixable", False):
-                fixed_issues.append((result, issue))
+    *fix_results* is a list of dicts with keys ``desc``, ``status``, ``detail``.
+    ``status`` is one of ``"changed"``, ``"already_ok"``, ``"error"``.
+    Returns the empty string when *fix_results* is None or empty (i.e. --fix
+    was not run).
+    """
+    if not fix_results:
+        return ""
 
-    if not fixed_issues:
-        lines.append("  No automatic fixes were applied.")
-    else:
-        for result, issue in fixed_issues:
-            num = _criterion_number(result)
-            name = _criterion_name(result)
-            label = f"{num}  {name}" if num else name
-            summary = getattr(issue, "message", "") or getattr(issue, "summary", "")
-            location = getattr(issue, "location", "") or getattr(issue, "page", "")
+    n_changed    = sum(1 for r in fix_results if r["status"] == "changed")
+    n_already_ok = sum(1 for r in fix_results if r["status"] == "already_ok")
+    n_errors     = sum(1 for r in fix_results if r["status"] == "error")
 
-            lines.append(f"  [{label}]")
-            if summary:
-                lines.append(_wrap(summary, 6))
-            if location:
-                lines.append(f"      Location: {location}")
-            lines.append("")
+    lines = [_section("FIXES APPLIED BY --fix"), ""]
+    lines.append("  The following automatic fixes were attempted on this PDF.")
+    lines.append("  Only metadata and structural markup are modified — visible")
+    lines.append("  content (text, images, layout) is never changed.")
+    lines.append("")
 
+    # Determine column width for the description so trailing detail aligns
+    max_desc = max(len(r["desc"]) for r in fix_results)
+    desc_w = min(max_desc, 50)
+
+    for r in fix_results:
+        tag = _FIX_STATUS_TAG.get(r["status"], "?        ")
+        desc = r["desc"]
+        if len(desc) > desc_w:
+            desc = desc[: desc_w - 1] + "…"
+        detail = r.get("detail") or ""
+        detail_part = f"  ({detail})" if detail else ""
+        lines.append(f"  [{tag}]  {desc:<{desc_w}}{detail_part}")
+
+    lines.append("")
+    lines.append(
+        f"  Summary:  {n_changed} change(s) applied, "
+        f"{n_already_ok} already correct, "
+        f"{n_errors} error(s)"
+    )
+    lines.append("")
+    lines.append(_rule("-"))
     return "\n".join(lines)
 
 
@@ -425,122 +433,6 @@ def _build_fixable_preview(results: List[CheckResult]) -> str:
     return "\n".join(lines)
 
 
-def _build_fixes_applied(results: List[CheckResult]) -> str:
-    """Section shown after --fix was run: lists what was corrected."""
-    fixed: dict = {}  # criterion -> name
-    for r in results:
-        for i in r.issues:
-            if i.fix_applied and r.wcag_criterion not in fixed:
-                fixed[r.wcag_criterion] = r.name
-    if not fixed:
-        return ""
-
-    lines = [_section("AUTOMATICALLY FIXED BY --fix"), ""]
-    lines.append("  The following issues were corrected automatically:")
-    lines.append("")
-    for crit, name in fixed.items():
-        lines.append(f"  [FIXED]  [{crit}] {name}")
-    lines.append("")
-    lines.append(_rule())
-    return "\n".join(lines)
-
-
-def _build_what_to_do_next(
-    results: List[CheckResult],
-    already_fixed: bool = False,
-    n_auto_fixed: int = 0,
-) -> str:
-    """Build the actionable 'What To Do Next' section."""
-    failing = [r for r in results if r.status == CheckStatus.FAIL]
-    manual_review = [r for r in results if r.status == CheckStatus.MANUAL]
-
-    auto_fixable_pairs = [
-        (r, i) for r in failing for i in r.issues if i.fixable
-    ]
-    manual_pairs = [
-        (r, i) for r in failing for i in r.issues if not i.fixable
-    ]
-
-    if not auto_fixable_pairs and not manual_pairs and not manual_review and not (already_fixed and n_auto_fixed):
-        return ""
-
-    lines = [_section("WHAT TO DO NEXT"), ""]
-    step = 1
-
-    # ---- banner: --fix was run and corrected issues (now passing) ------------
-    if already_fixed and n_auto_fixed > 0 and not auto_fixable_pairs:
-        lines.append(
-            f"  {step}. AUTO-FIXES APPLIED — {n_auto_fixed} structural fix(es) corrected"
-        )
-        lines.append(
-            "     The issues listed below are what remains after --fix was run."
-        )
-        lines.append("")
-        step += 1
-
-    # ---- auto-fixable (still failing) ----------------------------------------
-    if auto_fixable_pairs:
-        n_checks = len({r.wcag_criterion for r, _ in auto_fixable_pairs})
-        if already_fixed:
-            lines.append(f"  {step}. CORRECTED BY --fix ({n_checks} issue(s) fixed automatically)")
-        else:
-            lines.append(f"  {step}. RUN --fix TO AUTO-CORRECT {n_checks} ISSUE(S)")
-            lines.append("     python check_pdf.py <your_pdf> --fix")
-        lines.append("")
-        seen: set = set()
-        for result, issue in auto_fixable_pairs:
-            key = result.wcag_criterion
-            if key not in seen:
-                seen.add(key)
-                marker = "[FIXED]" if already_fixed else "[AUTO] "
-                lines.append(f"     {marker}  [{key}] {result.name}")
-                if issue.location:
-                    lines.append(_wrap(f"Location: {issue.location}", 20))
-        lines.append("")
-        step += 1
-
-    # ---- manual fixes --------------------------------------------------------
-    if manual_pairs:
-        n_issues = len(manual_pairs)
-        n_checks = len({r.wcag_criterion for r, _ in manual_pairs})
-        lines.append(
-            f"  {step}. MANUAL EDITS REQUIRED — {n_issues} issue(s) in {n_checks} check(s)"
-        )
-        lines.append("     Edit the source document (cannot be auto-fixed):")
-        lines.append("")
-        seen = set()
-        for result, issue in manual_pairs:
-            key = result.wcag_criterion
-            if key not in seen:
-                seen.add(key)
-                lines.append(f"     [{key}] {result.name}")
-                guidance = _MANUAL_FIX_GUIDANCE.get(
-                    key, "Review this criterion and update the source document."
-                )
-                lines.append(_wrap(guidance, 11))
-        lines.append("")
-        step += 1
-
-    # ---- manual review -------------------------------------------------------
-    if manual_review:
-        n = len(manual_review)
-        lines.append(
-            f"  {step}. MANUAL VISUAL REVIEW — {n} criterion/criteria"
-        )
-        lines.append("     Cannot be verified automatically — human review required:")
-        lines.append("")
-        for result in manual_review:
-            lines.append(f"     [{result.wcag_criterion}] {result.name}")
-            if result.issues:
-                msg = result.issues[0].message
-                if len(msg) > 100:
-                    msg = msg[:97] + "..."
-                lines.append(_wrap(msg, 11))
-        lines.append("")
-
-    return "\n".join(lines)
-
-
 def _build_footer() -> str:
     url = "https://www.w3.org/TR/WCAG21/"
     content = f"WCAG 2.1 REFERENCE: {url}"
@@ -560,8 +452,7 @@ def generate(
     results: List[CheckResult],
     pdf_path: str,
     output_path: str,
-    already_fixed: bool = False,
-    n_auto_fixed: int = 0,
+    fix_results: list | None = None,
 ) -> None:
     """
     Write a plain-text accessibility report to *output_path*.
@@ -574,24 +465,24 @@ def generate(
         Path to the source PDF file (used for display only).
     output_path:
         Destination path for the ``.txt`` report.
-    already_fixed:
-        True when --fix was applied before this report was generated.
-    n_auto_fixed:
-        Number of fixers that actually changed the PDF.
+    fix_results:
+        When ``--fix`` was run, a list of per-fixer dicts with keys
+        ``desc``, ``status`` (``"changed"`` / ``"already_ok"`` / ``"error"``)
+        and ``detail``.  When omitted or empty the report shows the
+        "what --fix can do" preview instead.
     """
+    fixes_section = _build_fixes_applied(fix_results)
+    preview_section = "" if fix_results else _build_fixable_preview(results)
+
     sections = [
         _build_header(pdf_path, results),
         "",
         _build_summary(results),
         "",
-        _build_fixable_preview(results),
-        _build_fixes_applied(results),
+        fixes_section,
+        preview_section,
         _build_principles(results),
         _build_manual_review(results),
-        "",
-        _build_auto_fixed(results),
-        "",
-        _build_what_to_do_next(results, already_fixed, n_auto_fixed),
         "",
         _build_footer(),
     ]

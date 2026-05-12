@@ -381,32 +381,33 @@ tr.detail-row.hidden { display: none; }
 }
 
 .auto-fix-preview { background:#f0fdf4; border-left:4px solid #22c55e; padding:20px 24px; border-radius:8px; margin:24px 0; }
-.auto-fixed { background:#f0fdf4; border-left:4px solid #22c55e; padding:20px 24px; border-radius:8px; margin:24px 0; }
-.fix-title, .fixed-title { color:#15803d; margin:0 0 12px; font-size:1.1rem; }
-.fix-list, .fixed-list { list-style:none; padding:0; margin:12px 0; }
-.fix-list li, .fixed-list li { padding:10px 0; border-bottom:1px solid #bbf7d0; display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; }
+.fix-title { color:#15803d; margin:0 0 12px; font-size:1.1rem; }
+.fix-list { list-style:none; padding:0; margin:12px 0; }
+.fix-list li { padding:10px 0; border-bottom:1px solid #bbf7d0; display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; }
 .fix-detail { width:100%; color:#166534; font-size:0.85rem; margin-top:4px; }
 .fix-command { background:#dcfce7; border-radius:6px; padding:12px 16px; margin-top:16px; font-family:monospace; font-size:0.9rem; color:#14532d; }
 
-/* ---- what to do next ---- */
-.action-box {
-    border-radius:0.75rem; padding:1.25rem 1.5rem;
-    margin-bottom:1rem; border-left:5px solid;
-    box-shadow:0 1px 3px rgba(0,0,0,.06);
+/* ---- fixes applied table (driven by --fix output) ---- */
+.fixes-applied { margin:24px 0; }
+.fixes-table {
+    width:100%; border-collapse:collapse;
+    background:#ffffff; border-radius:0.75rem; overflow:hidden;
+    box-shadow:0 1px 3px rgba(0,0,0,.08);
 }
-.action-fixed   { background:#f0fdf4; border-color:#22c55e; }
-.action-fixable { background:#f0fdf4; border-color:#16a34a; }
-.action-manual  { background:#fef2f2; border-color:#ef4444; }
-.action-review  { background:#fffbeb; border-color:#f59e0b; }
-.action-title   { font-size:1rem; font-weight:700; margin-bottom:0.75rem; }
-.action-fixed .action-title   { color:#15803d; }
-.action-fixable .action-title { color:#15803d; }
-.action-manual .action-title  { color:#dc2626; }
-.action-review .action-title  { color:#d97706; }
-.action-list { list-style:none; padding:0; display:flex; flex-direction:column; gap:0.6rem; }
-.action-list li { display:flex; flex-wrap:wrap; align-items:baseline; gap:0.35rem; }
-.action-guidance { width:100%; font-size:0.85rem; color:#475569; margin-top:0.2rem; }
-.action-loc { width:100%; font-size:0.8rem; color:#94a3b8; font-style:italic; margin-top:0.1rem; }
+.fixes-table thead tr { background:#f1f5f9; border-bottom:2px solid #e2e8f0; }
+.fixes-table th {
+    text-align:left; padding:0.55rem 1rem;
+    font-size:0.75rem; font-weight:600; text-transform:uppercase;
+    letter-spacing:0.05em; color:#64748b;
+}
+.fixes-table td { padding:0.55rem 1rem; border-bottom:1px solid #f1f5f9; vertical-align:middle; font-size:0.875rem; }
+.fixes-table tbody tr:last-child td { border-bottom:none; }
+.fix-detail-inline { color:#64748b; font-size:0.825rem; margin-left:0.4rem; }
+.fix-summary {
+    margin-top:0.85rem; padding:0.6rem 0.9rem;
+    background:#f8fafc; border-radius:0.5rem;
+    font-size:0.875rem; color:#334155;
+}
 .crit-badge { font-size:0.75rem; }
 """
 
@@ -617,33 +618,59 @@ def _render_manual_section(results: List[CheckResult]) -> str:
 # Fixed items section
 # ---------------------------------------------------------------------------
 
-def _render_fixed_section(results: List[CheckResult]) -> str:
-    fixed_issues: List[tuple] = []
-    for r in results:
-        for issue in r.issues:
-            if issue.fix_applied:
-                fixed_issues.append((r, issue))
+def _render_fixes_applied(fix_results: list | None) -> str:
+    """Return HTML for the 'Fixes Applied by --fix' section.
 
-    if not fixed_issues:
-        return '<p class="empty-state">No automatic fixes were applied.</p>'
+    *fix_results* is the list of per-fixer dicts produced by
+    ``check_pdf.apply_fixes`` — each item has keys ``desc``, ``status``
+    (``"changed"`` / ``"already_ok"`` / ``"error"``) and ``detail``.
+    Returns the empty string when *fix_results* is None or empty.
+    """
+    if not fix_results:
+        return ""
 
-    items = []
-    for result, issue in fixed_issues:
-        crit = _esc(result.wcag_criterion)
-        name = _esc(result.name)
-        msg = _esc(issue.message)
-        loc_html = (
-            f'<p class="item-loc">&#128205; {_esc(issue.location)}</p>'
-            if issue.location else ""
+    n_changed    = sum(1 for r in fix_results if r["status"] == "changed")
+    n_already_ok = sum(1 for r in fix_results if r["status"] == "already_ok")
+    n_errors     = sum(1 for r in fix_results if r["status"] == "error")
+
+    rows = []
+    for r in fix_results:
+        st = r["status"]
+        if st == "changed":
+            bg, fg, label = "#16a34a", "#fff", "CHANGED"
+        elif st == "already_ok":
+            bg, fg, label = "#94a3b8", "#fff", "NO CHANGE"
+        else:
+            bg, fg, label = "#dc2626", "#fff", "ERROR"
+
+        detail = _esc(r.get("detail") or "")
+        detail_html = f'<span class="fix-detail-inline">— {detail}</span>' if detail else ""
+
+        rows.append(
+            f'<tr class="fix-row">'
+            f'<td><span class="badge" style="background:{bg};color:{fg};">{label}</span></td>'
+            f'<td><strong>{_esc(r["desc"])}</strong>{detail_html}</td>'
+            f'</tr>'
         )
-        items.append(
-            f'<li class="fixed-item">'
-            f'<div class="item-header">&#10003; <code>{crit}</code> {name}</div>'
-            f'<p class="item-body">{msg}</p>'
-            f'{loc_html}'
-            f'</li>'
-        )
-    return '<ul class="fixed-list">' + "\n".join(items) + "</ul>"
+
+    return (
+        f'<section class="fixes-applied">'
+        f'<h2 class="section-title">Fixes Applied by <code>--fix</code></h2>'
+        f'<p style="font-size:0.875rem;color:#475569;margin-bottom:0.6rem;">'
+        f'Only metadata and structural markup are modified — visible content '
+        f'(text, images, layout) is never changed.'
+        f'</p>'
+        f'<table class="fixes-table">'
+        f'<thead><tr><th>Status</th><th>Fix</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody>'
+        f'</table>'
+        f'<div class="fix-summary">'
+        f'<strong>{n_changed}</strong> change(s) applied &nbsp;·&nbsp; '
+        f'<strong>{n_already_ok}</strong> already correct &nbsp;·&nbsp; '
+        f'<strong>{n_errors}</strong> error(s)'
+        f'</div>'
+        f'</section>'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -694,218 +721,6 @@ def _render_auto_fix_preview(results: List[CheckResult]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Auto-fixed summary section
-# ---------------------------------------------------------------------------
-
-def _render_auto_fixed_summary(results: List[CheckResult]) -> str:
-    """Return HTML for 'Issues Corrected by --fix' or empty string."""
-    seen: set = set()
-    fixed_items: list = []  # (criterion, name)
-    for r in results:
-        for i in r.issues:
-            if i.fix_applied and r.wcag_criterion not in seen:
-                seen.add(r.wcag_criterion)
-                fixed_items.append((r.wcag_criterion, r.name))
-
-    if not fixed_items:
-        return ""
-
-    li_html = []
-    for crit, name in fixed_items:
-        li_html.append(
-            f'<li>'
-            f'<span class="crit-badge badge" style="background:#166534;color:#fff;">{_esc(crit)}</span>'
-            f'<strong>{_esc(name)}</strong>'
-            f' — corrected automatically'
-            f'</li>'
-        )
-
-    return (
-        f'<section class="auto-fixed">'
-        f'<h2 class="section-title fixed-title">&#10003; Issues Corrected by <code>--fix</code></h2>'
-        f'<ul class="fixed-list">{"".join(li_html)}</ul>'
-        f'</section>'
-    )
-
-
-# ---------------------------------------------------------------------------
-# What To Do Next section
-# ---------------------------------------------------------------------------
-
-_MANUAL_FIX_GUIDANCE = {
-    "1.1.1":  "Add meaningful alt text to every image in your authoring tool (Word, InDesign, LaTeX \\includegraphics[alt={...}]).",
-    "1.3.1":  "Re-author the PDF with proper tagging: use a tagged PDF workflow (LaTeX tagpdf, Adobe Acrobat, or Word).",
-    "1.3.2":  "Re-author the PDF ensuring the structure tree reading order matches the visual order.",
-    "1.4.3":  "Change text or background colours in the source document to achieve ≥ 4.5:1 contrast (https://webaim.org/resources/contrastchecker/).",
-    "1.4.5":  "Replace images of text with real searchable text in the source document.",
-    "1.4.11": "Ensure form field borders and UI components have ≥ 3:1 contrast against adjacent colours.",
-    "2.4.1":  "Add PDF bookmarks (Outlines) via your authoring tool or with Adobe Acrobat's Bookmarks panel.",
-    "2.4.4":  "Replace vague link text ('click here', 'read more') with descriptive text in the source document.",
-    "2.4.5":  "Add a Table of Contents or bookmarks so users have multiple ways to navigate the document.",
-    "2.4.6":  "Ensure headings are tagged (H1–H6) in proper hierarchical order in the structure tree.",
-    "3.1.2":  "Tag passages in a different language with the correct /Lang attribute in your authoring tool.",
-}
-
-
-def _render_what_to_do_next(
-    results: List[CheckResult],
-    already_fixed: bool = False,
-    n_auto_fixed: int = 0,
-) -> str:
-    """Return HTML for the 'What To Do Next' action plan section."""
-    failing = [r for r in results if r.status == CheckStatus.FAIL]
-    manual_review = [r for r in results if r.status == CheckStatus.MANUAL]
-
-    auto_fixable_pairs = [(r, i) for r in failing for i in r.issues if i.fixable]
-    manual_pairs = [(r, i) for r in failing for i in r.issues if not i.fixable]
-
-    # Nothing to show at all
-    if not auto_fixable_pairs and not manual_pairs and not manual_review and not (already_fixed and n_auto_fixed):
-        return ""
-
-    parts: list = []
-    step = 1
-
-    # ---- banner: --fix was run and made changes (issues now passing) ---------
-    if already_fixed and n_auto_fixed > 0 and not auto_fixable_pairs:
-        parts.append(
-            f'<div class="action-box action-fixed">'
-            f'<h3 class="action-title">Auto-fixable Issues Were Corrected by <code>--fix</code></h3>'
-            f'<p style="font-size:0.9rem;color:#166534;">'
-            f'{n_auto_fixed} structural fix(es) were applied automatically. '
-            f'The corrected PDF has been saved. Re-run without <code>--fix</code> '
-            f'to verify the remaining items below.</p>'
-            f'</div>'
-        )
-
-    # ---- auto-fixable (still failing — unusual, e.g. fix errored) -----------
-    if auto_fixable_pairs:
-        n_checks = len({r.wcag_criterion for r, _ in auto_fixable_pairs})
-        if already_fixed:
-            title = f"{n_checks} Issue(s) Corrected by <code>--fix</code>"
-            box_class = "action-box action-fixed"
-        else:
-            title = f"Step {step}: Run <code>--fix</code> to Auto-Correct {n_checks} Issue(s)"
-            box_class = "action-box action-fixable"
-
-        items_html = []
-        seen: set = set()
-        for result, issue in auto_fixable_pairs:
-            key = result.wcag_criterion
-            if key not in seen:
-                seen.add(key)
-                loc_html = (
-                    f'<div class="action-loc">Location: {_esc(issue.location)}</div>'
-                    if issue.location else ""
-                )
-                items_html.append(
-                    f'<li>'
-                    f'<span class="badge crit-badge" style="background:#166534;color:#fff;">{_esc(key)}</span>'
-                    f'<strong>{_esc(result.name)}</strong>'
-                    f'{loc_html}'
-                    f'</li>'
-                )
-
-        command_html = (
-            ""
-            if already_fixed else
-            f'<div class="fix-command"><code>python check_pdf.py &lt;your_pdf&gt; --fix</code></div>'
-        )
-        parts.append(
-            f'<div class="{box_class}">'
-            f'<h3 class="action-title">{title}</h3>'
-            f'<ul class="action-list">{"".join(items_html)}</ul>'
-            f'{command_html}'
-            f'</div>'
-        )
-        step += 1
-
-    # ---- manual fixes --------------------------------------------------------
-    if manual_pairs:
-        n_issues = len(manual_pairs)
-        n_checks = len({r.wcag_criterion for r, _ in manual_pairs})
-        title = (
-            f"Step {step}: Edit Source Document — "
-            f"{n_checks} Item(s) Require Manual Changes"
-        )
-
-        items_html = []
-        seen = set()
-        for result, issue in manual_pairs:
-            key = result.wcag_criterion
-            if key not in seen:
-                seen.add(key)
-                guidance = _MANUAL_FIX_GUIDANCE.get(
-                    key, "Review this criterion and update the source document."
-                )
-                url = result.wcag_url or (
-                    f"https://www.w3.org/TR/WCAG21/#{key.replace('.', '')}"
-                )
-                items_html.append(
-                    f'<li>'
-                    f'<span class="badge crit-badge" style="background:#dc2626;color:#fff;">{_esc(key)}</span>'
-                    f'<strong>{_esc(result.name)}</strong>'
-                    f'<div class="action-guidance">{_esc(guidance)}</div>'
-                    f'<div class="action-loc">'
-                    f'<a href="{_esc(url)}" target="_blank" rel="noopener">WCAG reference</a>'
-                    f'</div>'
-                    f'</li>'
-                )
-
-        parts.append(
-            f'<div class="action-box action-manual">'
-            f'<h3 class="action-title">{title}</h3>'
-            f'<ul class="action-list">{"".join(items_html)}</ul>'
-            f'</div>'
-        )
-        step += 1
-
-    # ---- manual review -------------------------------------------------------
-    if manual_review:
-        n = len(manual_review)
-        title = (
-            f"Step {step}: Manual Visual Review — "
-            f"{n} Item(s) Need Human Verification"
-        )
-
-        items_html = []
-        for result in manual_review:
-            msg = ""
-            if result.issues:
-                msg = result.issues[0].message
-                if len(msg) > 120:
-                    msg = msg[:117] + "..."
-            url = result.wcag_url or (
-                f"https://www.w3.org/TR/WCAG21/#{result.wcag_criterion.replace('.', '')}"
-            )
-            items_html.append(
-                f'<li>'
-                f'<span class="badge crit-badge" style="background:#d97706;color:#fff;">'
-                f'{_esc(result.wcag_criterion)}</span>'
-                f'<strong>{_esc(result.name)}</strong>'
-                + (f'<div class="action-guidance">{_esc(msg)}</div>' if msg else "")
-                + f'<div class="action-loc">'
-                f'<a href="{_esc(url)}" target="_blank" rel="noopener">WCAG reference</a>'
-                f'</div>'
-                f'</li>'
-            )
-
-        parts.append(
-            f'<div class="action-box action-review">'
-            f'<h3 class="action-title">{title}</h3>'
-            f'<ul class="action-list">{"".join(items_html)}</ul>'
-            f'</div>'
-        )
-
-    return (
-        f'<section class="what-to-do">'
-        f'<h2 class="section-title">What To Do Next</h2>'
-        + "\n".join(parts)
-        + f'</section>'
-    )
-
-
-# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -913,8 +728,7 @@ def generate(
     results: List[CheckResult],
     pdf_path: str,
     output_path: str,
-    already_fixed: bool = False,
-    n_auto_fixed: int = 0,
+    fix_results: list | None = None,
 ) -> None:
     """Write a self-contained HTML accessibility report to *output_path*.
 
@@ -922,8 +736,10 @@ def generate(
         results:      List of CheckResult objects from the checker modules.
         pdf_path:     Path to the original PDF that was checked.
         output_path:  Destination path for the HTML report file.
-        already_fixed: True when --fix was applied before generating this report.
-        n_auto_fixed: Number of fixers that actually changed the PDF.
+        fix_results:  When ``--fix`` was run, the per-fixer status list produced
+                      by ``check_pdf.apply_fixes`` (dicts with ``desc``, ``status``,
+                      ``detail``).  Omitted/empty shows the "what --fix can do"
+                      preview instead.
     """
     pdf_filename = _esc(os.path.basename(pdf_path))
     date_str = _esc(datetime.now().strftime("%B %d, %Y at %H:%M"))
@@ -941,12 +757,11 @@ def generate(
     bar_colour = "#22c55e" if pct_pass >= 80 else ("#f59e0b" if pct_pass >= 50 else "#ef4444")
     bar_gradient = f"background: linear-gradient(90deg, {bar_colour} 0%, {bar_colour}cc 100%);"
 
-    results_tables      = _render_results_tables(results)
-    manual_section      = _render_manual_section(results)
-    fixed_section       = _render_fixed_section(results)
-    auto_fix_preview    = _render_auto_fix_preview(results)
-    auto_fixed_summary  = _render_auto_fixed_summary(results)
-    what_to_do_next     = _render_what_to_do_next(results, already_fixed, n_auto_fixed)
+    results_tables   = _render_results_tables(results)
+    manual_section   = _render_manual_section(results)
+    fixes_applied    = _render_fixes_applied(fix_results)
+    # Only show the "preview of what --fix would do" when --fix has NOT been run
+    auto_fix_preview = "" if fix_results else _render_auto_fix_preview(results)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -1012,11 +827,11 @@ def generate(
     </div>
   </div>
 
+  <!-- ---- Fixes applied (shown when --fix was run) ---- -->
+  {fixes_applied}
+
   <!-- ---- Auto-fix preview (shown when --fix has NOT yet been run) ---- -->
   {auto_fix_preview}
-
-  <!-- ---- Auto-fixed summary (shown when --fix was run) ---- -->
-  {auto_fixed_summary}
 
   <!-- ---- Results by WCAG principle ---- -->
   <h2 class="section-title">Results by WCAG Criterion</h2>
@@ -1028,13 +843,6 @@ def generate(
   <!-- ---- Manual review ---- -->
   <h2 class="section-title">Items Requiring Manual Review</h2>
   {manual_section}
-
-  <!-- ---- What was fixed ---- -->
-  <h2 class="section-title">What Was Fixed Automatically</h2>
-  {fixed_section}
-
-  <!-- ---- What To Do Next ---- -->
-  {what_to_do_next}
 
 </main>
 
