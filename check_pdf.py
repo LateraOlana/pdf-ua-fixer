@@ -683,7 +683,7 @@ def main() -> int:
         report_html_path = str(pdf_path.with_name(stem + "_accessibility_report.html"))
         try:
             from report.html_report import generate as html_generate
-            html_generate(all_results, str(pdf_path), report_html_path)
+            html_generate(all_results, str(pdf_path), report_html_path, already_fixed=args.fix)
         except ImportError:
             print("WARNING: report.html_report not available — HTML report skipped.", file=sys.stderr)
             report_html_path = None
@@ -695,7 +695,7 @@ def main() -> int:
         report_txt_path = str(pdf_path.with_name(stem + "_accessibility_report.txt"))
         try:
             from report.txt_report import generate as txt_generate
-            txt_generate(all_results, str(pdf_path), report_txt_path)
+            txt_generate(all_results, str(pdf_path), report_txt_path, already_fixed=args.fix)
         except ImportError:
             print("WARNING: report.txt_report not available — TXT report skipped.", file=sys.stderr)
             report_txt_path = None
