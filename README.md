@@ -12,7 +12,7 @@ but the checks and fixes apply to any PDF.
 
 ```bash
 # 1. Clone and install dependencies
-git clone https://github.com/latera_ihme/pdf-ua-fixer.git
+git clone https://github.com/LateraOlana/pdf-ua-fixer.git
 cd pdf-ua-fixer
 pip install -r requirements.txt
 
