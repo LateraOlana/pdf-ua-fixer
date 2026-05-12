@@ -445,13 +445,14 @@ def _build_fixes_applied(results: List[CheckResult]) -> str:
     return "\n".join(lines)
 
 
-def _build_what_to_do_next(results: List[CheckResult], already_fixed: bool = False) -> str:
+def _build_what_to_do_next(
+    results: List[CheckResult],
+    already_fixed: bool = False,
+    n_auto_fixed: int = 0,
+) -> str:
     """Build the actionable 'What To Do Next' section."""
     failing = [r for r in results if r.status == CheckStatus.FAIL]
     manual_review = [r for r in results if r.status == CheckStatus.MANUAL]
-
-    if not failing and not manual_review:
-        return ""
 
     auto_fixable_pairs = [
         (r, i) for r in failing for i in r.issues if i.fixable
@@ -460,10 +461,24 @@ def _build_what_to_do_next(results: List[CheckResult], already_fixed: bool = Fal
         (r, i) for r in failing for i in r.issues if not i.fixable
     ]
 
+    if not auto_fixable_pairs and not manual_pairs and not manual_review and not (already_fixed and n_auto_fixed):
+        return ""
+
     lines = [_section("WHAT TO DO NEXT"), ""]
     step = 1
 
-    # ---- auto-fixable --------------------------------------------------------
+    # ---- banner: --fix was run and corrected issues (now passing) ------------
+    if already_fixed and n_auto_fixed > 0 and not auto_fixable_pairs:
+        lines.append(
+            f"  {step}. AUTO-FIXES APPLIED — {n_auto_fixed} structural fix(es) corrected"
+        )
+        lines.append(
+            "     The issues listed below are what remains after --fix was run."
+        )
+        lines.append("")
+        step += 1
+
+    # ---- auto-fixable (still failing) ----------------------------------------
     if auto_fixable_pairs:
         n_checks = len({r.wcag_criterion for r, _ in auto_fixable_pairs})
         if already_fixed:
@@ -546,6 +561,7 @@ def generate(
     pdf_path: str,
     output_path: str,
     already_fixed: bool = False,
+    n_auto_fixed: int = 0,
 ) -> None:
     """
     Write a plain-text accessibility report to *output_path*.
@@ -560,13 +576,15 @@ def generate(
         Destination path for the ``.txt`` report.
     already_fixed:
         True when --fix was applied before this report was generated.
+    n_auto_fixed:
+        Number of fixers that actually changed the PDF.
     """
     sections = [
         _build_header(pdf_path, results),
         "",
         _build_summary(results),
         "",
-        _build_what_to_do_next(results, already_fixed),
+        _build_what_to_do_next(results, already_fixed, n_auto_fixed),
         "",
         _build_fixable_preview(results),
         _build_fixes_applied(results),

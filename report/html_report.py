@@ -747,21 +747,38 @@ _MANUAL_FIX_GUIDANCE = {
 }
 
 
-def _render_what_to_do_next(results: List[CheckResult], already_fixed: bool = False) -> str:
+def _render_what_to_do_next(
+    results: List[CheckResult],
+    already_fixed: bool = False,
+    n_auto_fixed: int = 0,
+) -> str:
     """Return HTML for the 'What To Do Next' action plan section."""
     failing = [r for r in results if r.status == CheckStatus.FAIL]
     manual_review = [r for r in results if r.status == CheckStatus.MANUAL]
 
-    if not failing and not manual_review:
-        return ""
-
     auto_fixable_pairs = [(r, i) for r in failing for i in r.issues if i.fixable]
     manual_pairs = [(r, i) for r in failing for i in r.issues if not i.fixable]
+
+    # Nothing to show at all
+    if not auto_fixable_pairs and not manual_pairs and not manual_review and not (already_fixed and n_auto_fixed):
+        return ""
 
     parts: list = []
     step = 1
 
-    # ---- auto-fixable --------------------------------------------------------
+    # ---- banner: --fix was run and made changes (issues now passing) ---------
+    if already_fixed and n_auto_fixed > 0 and not auto_fixable_pairs:
+        parts.append(
+            f'<div class="action-box action-fixed">'
+            f'<h3 class="action-title">&#10003; Auto-fixable Issues Were Corrected by <code>--fix</code></h3>'
+            f'<p style="font-size:0.9rem;color:#166534;">'
+            f'{n_auto_fixed} structural fix(es) were applied automatically. '
+            f'The corrected PDF has been saved. Re-run without <code>--fix</code> '
+            f'to verify the remaining items below.</p>'
+            f'</div>'
+        )
+
+    # ---- auto-fixable (still failing — unusual, e.g. fix errored) -----------
     if auto_fixable_pairs:
         n_checks = len({r.wcag_criterion for r, _ in auto_fixable_pairs})
         if already_fixed:
@@ -899,6 +916,7 @@ def generate(
     pdf_path: str,
     output_path: str,
     already_fixed: bool = False,
+    n_auto_fixed: int = 0,
 ) -> None:
     """Write a self-contained HTML accessibility report to *output_path*.
 
@@ -907,6 +925,7 @@ def generate(
         pdf_path:     Path to the original PDF that was checked.
         output_path:  Destination path for the HTML report file.
         already_fixed: True when --fix was applied before generating this report.
+        n_auto_fixed: Number of fixers that actually changed the PDF.
     """
     pdf_filename = _esc(os.path.basename(pdf_path))
     date_str = _esc(datetime.now().strftime("%B %d, %Y at %H:%M"))
@@ -929,7 +948,7 @@ def generate(
     fixed_section       = _render_fixed_section(results)
     auto_fix_preview    = _render_auto_fix_preview(results)
     auto_fixed_summary  = _render_auto_fixed_summary(results)
-    what_to_do_next     = _render_what_to_do_next(results, already_fixed)
+    what_to_do_next     = _render_what_to_do_next(results, already_fixed, n_auto_fixed)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">

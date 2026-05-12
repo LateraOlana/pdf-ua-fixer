@@ -629,10 +629,12 @@ def main() -> int:
 
     # --- Apply fixes -------------------------------------------------------
     fixed_pdf_path = str(pdf_path)  # default: check original
+    n_auto_fixed = 0  # number of fixers that actually changed the PDF
 
     if args.fix:
         try:
             fix_results = apply_fixes(pdf, str(pdf_path), args.lang, title)
+            n_auto_fixed = sum(1 for r in fix_results if r["status"] == "changed")
 
             # Save before printing so output_path exists when referenced
             try:
@@ -683,7 +685,8 @@ def main() -> int:
         report_html_path = str(pdf_path.with_name(stem + "_accessibility_report.html"))
         try:
             from report.html_report import generate as html_generate
-            html_generate(all_results, str(pdf_path), report_html_path, already_fixed=args.fix)
+            html_generate(all_results, str(pdf_path), report_html_path,
+                          already_fixed=args.fix, n_auto_fixed=n_auto_fixed)
         except ImportError:
             print("WARNING: report.html_report not available — HTML report skipped.", file=sys.stderr)
             report_html_path = None
@@ -695,7 +698,8 @@ def main() -> int:
         report_txt_path = str(pdf_path.with_name(stem + "_accessibility_report.txt"))
         try:
             from report.txt_report import generate as txt_generate
-            txt_generate(all_results, str(pdf_path), report_txt_path, already_fixed=args.fix)
+            txt_generate(all_results, str(pdf_path), report_txt_path,
+                         already_fixed=args.fix, n_auto_fixed=n_auto_fixed)
         except ImportError:
             print("WARNING: report.txt_report not available — TXT report skipped.", file=sys.stderr)
             report_txt_path = None
