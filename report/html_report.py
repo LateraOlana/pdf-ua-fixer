@@ -770,7 +770,7 @@ def _render_what_to_do_next(
     if already_fixed and n_auto_fixed > 0 and not auto_fixable_pairs:
         parts.append(
             f'<div class="action-box action-fixed">'
-            f'<h3 class="action-title">&#10003; Auto-fixable Issues Were Corrected by <code>--fix</code></h3>'
+            f'<h3 class="action-title">Auto-fixable Issues Were Corrected by <code>--fix</code></h3>'
             f'<p style="font-size:0.9rem;color:#166534;">'
             f'{n_auto_fixed} structural fix(es) were applied automatically. '
             f'The corrected PDF has been saved. Re-run without <code>--fix</code> '
@@ -782,10 +782,10 @@ def _render_what_to_do_next(
     if auto_fixable_pairs:
         n_checks = len({r.wcag_criterion for r, _ in auto_fixable_pairs})
         if already_fixed:
-            title = f"&#10003; {n_checks} Issue(s) Corrected by <code>--fix</code>"
+            title = f"{n_checks} Issue(s) Corrected by <code>--fix</code>"
             box_class = "action-box action-fixed"
         else:
-            title = f"&#128295; Step {step}: Run <code>--fix</code> to Auto-Correct {n_checks} Issue(s)"
+            title = f"Step {step}: Run <code>--fix</code> to Auto-Correct {n_checks} Issue(s)"
             box_class = "action-box action-fixable"
 
         items_html = []
@@ -795,13 +795,11 @@ def _render_what_to_do_next(
             if key not in seen:
                 seen.add(key)
                 loc_html = (
-                    f'<div class="action-loc">&#128205; {_esc(issue.location)}</div>'
+                    f'<div class="action-loc">Location: {_esc(issue.location)}</div>'
                     if issue.location else ""
                 )
-                marker = "&#10003;" if already_fixed else "&#8594;"
                 items_html.append(
                     f'<li>'
-                    f'<span style="font-size:1rem;">{marker}</span>'
                     f'<span class="badge crit-badge" style="background:#166534;color:#fff;">{_esc(key)}</span>'
                     f'<strong>{_esc(result.name)}</strong>'
                     f'{loc_html}'
@@ -827,7 +825,7 @@ def _render_what_to_do_next(
         n_issues = len(manual_pairs)
         n_checks = len({r.wcag_criterion for r, _ in manual_pairs})
         title = (
-            f"&#9998; Step {step}: Edit Source Document — "
+            f"Step {step}: Edit Source Document — "
             f"{n_checks} Item(s) Require Manual Changes"
         )
 
@@ -849,7 +847,7 @@ def _render_what_to_do_next(
                     f'<strong>{_esc(result.name)}</strong>'
                     f'<div class="action-guidance">{_esc(guidance)}</div>'
                     f'<div class="action-loc">'
-                    f'<a href="{_esc(url)}" target="_blank" rel="noopener">WCAG reference &#8599;</a>'
+                    f'<a href="{_esc(url)}" target="_blank" rel="noopener">WCAG reference</a>'
                     f'</div>'
                     f'</li>'
                 )
@@ -866,7 +864,7 @@ def _render_what_to_do_next(
     if manual_review:
         n = len(manual_review)
         title = (
-            f"&#128269; Step {step}: Manual Visual Review — "
+            f"Step {step}: Manual Visual Review — "
             f"{n} Item(s) Need Human Verification"
         )
 
@@ -887,7 +885,7 @@ def _render_what_to_do_next(
                 f'<strong>{_esc(result.name)}</strong>'
                 + (f'<div class="action-guidance">{_esc(msg)}</div>' if msg else "")
                 + f'<div class="action-loc">'
-                f'<a href="{_esc(url)}" target="_blank" rel="noopener">WCAG reference &#8599;</a>'
+                f'<a href="{_esc(url)}" target="_blank" rel="noopener">WCAG reference</a>'
                 f'</div>'
                 f'</li>'
             )
@@ -1014,9 +1012,6 @@ def generate(
     </div>
   </div>
 
-  <!-- ---- What To Do Next ---- -->
-  {what_to_do_next}
-
   <!-- ---- Auto-fix preview (shown when --fix has NOT yet been run) ---- -->
   {auto_fix_preview}
 
@@ -1037,6 +1032,9 @@ def generate(
   <!-- ---- What was fixed ---- -->
   <h2 class="section-title">What Was Fixed Automatically</h2>
   {fixed_section}
+
+  <!-- ---- What To Do Next ---- -->
+  {what_to_do_next}
 
 </main>
 
