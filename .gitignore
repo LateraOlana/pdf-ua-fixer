@@ -7,3 +7,6 @@ __pycache__/
 venv/
 dist/
 build/
+*_accessibility_report.html
+*_accessibility_report.txt
+.claude/

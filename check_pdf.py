@@ -1,0 +1,574 @@
+#!/usr/bin/env python3
+"""
+check_pdf.py — WCAG 2.1 Level AA accessibility checker for PDF files.
+
+Usage:
+    python check_pdf.py input.pdf
+    python check_pdf.py input.pdf --fix
+    python check_pdf.py input.pdf --fix --output fixed.pdf
+    python check_pdf.py input.pdf --report-only
+"""
+import argparse
+import io
+import sys
+import os
+from datetime import date
+from pathlib import Path
+
+# Ensure UTF-8 output on all platforms (especially Windows).
+# Only rewrap when running as a script so that importing the module doesn't
+# close the caller's stdout prematurely (e.g. during testing).
+if __name__ == "__main__" or hasattr(sys.stdout, "buffer"):
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    except AttributeError:
+        pass  # already a TextIOWrapper without .buffer (e.g. StringIO in tests)
+
+# ---------------------------------------------------------------------------
+# ANSI colour helpers
+# ---------------------------------------------------------------------------
+
+try:
+    _USE_COLOUR = sys.stdout.isatty()
+except Exception:
+    _USE_COLOUR = False
+
+_ANSI = {
+    "green":  "\033[32m",
+    "red":    "\033[31m",
+    "yellow": "\033[33m",
+    "gray":   "\033[90m",
+    "reset":  "\033[0m",
+    "bold":   "\033[1m",
+    "cyan":   "\033[36m",
+}
+
+
+def _c(text: str, colour: str) -> str:
+    """Wrap *text* in an ANSI colour escape if the terminal supports it."""
+    if not _USE_COLOUR:
+        return text
+    return f"{_ANSI.get(colour, '')}{text}{_ANSI['reset']}"
+
+
+def _badge(status_value: str) -> str:
+    """Return a colourised [STATUS] badge string."""
+    colour_map = {
+        "PASS":   "green",
+        "FAIL":   "red",
+        "MANUAL": "yellow",
+        "NA":     "gray",
+    }
+    label_map = {
+        "PASS":   "PASS",
+        "FAIL":   "FAIL",
+        "MANUAL": "MNUL",
+        "NA":     "N/A ",
+    }
+    label = label_map.get(status_value, status_value[:4].ljust(4))
+    colour = colour_map.get(status_value, "reset")
+    return _c(f"[{label}]", colour)
+
+
+# ---------------------------------------------------------------------------
+# Fixer application
+# ---------------------------------------------------------------------------
+
+def apply_fixes(pdf, pdf_path: str, lang: str, title: str):
+    """
+    Apply all available automatic fixes to an open pikepdf.Pdf.
+
+    Returns a list of (description, count) tuples for each fix applied.
+    """
+    fixes_applied = []
+
+    # --- PDF/UA metadata ---------------------------------------------------
+    try:
+        from fixes.pdfua_metadata import fix_pdfua_metadata
+        result = fix_pdfua_metadata(pdf)
+        if result.get("added"):
+            fixes_applied.append(("PDF/UA metadata set", 1))
+    except ImportError:
+        print("  WARNING: fixes.pdfua_metadata not available", file=sys.stderr)
+    except Exception as exc:
+        print(f"  WARNING: pdfua_metadata fix failed: {exc}", file=sys.stderr)
+
+    # --- Document title ----------------------------------------------------
+    try:
+        from fixes import document_title
+        n = document_title.fix(pdf, title)
+        if n:
+            fixes_applied.append(("Document title added", n))
+    except ImportError:
+        print("  WARNING: fixes.document_title not available", file=sys.stderr)
+    except Exception as exc:
+        print(f"  WARNING: document_title fix failed: {exc}", file=sys.stderr)
+
+    # --- Document language -------------------------------------------------
+    try:
+        from fixes import language
+        n = language.fix(pdf, lang)
+        if n:
+            fixes_applied.append((f"Document language set ({lang})", n))
+    except ImportError:
+        print("  WARNING: fixes.language not available", file=sys.stderr)
+    except Exception as exc:
+        print(f"  WARNING: language fix failed: {exc}", file=sys.stderr)
+
+    # --- Untagged paths ----------------------------------------------------
+    try:
+        from fixes.untagged_paths import fix_untagged_paths
+        result = fix_untagged_paths(pdf)
+        wrapped = result.get("wrapped", 0)
+        fixes_applied.append(("Untagged paths wrapped as artifacts", wrapped))
+    except ImportError:
+        print("  WARNING: fixes.untagged_paths not available", file=sys.stderr)
+    except Exception as exc:
+        print(f"  WARNING: untagged_paths fix failed: {exc}", file=sys.stderr)
+
+    # --- Artifact/content nesting ------------------------------------------
+    try:
+        from fixes.artifact_content import fix_artifact_content
+        result = fix_artifact_content(pdf)
+        unwrapped = result.get("unwrapped", 0)
+        if unwrapped:
+            fixes_applied.append(("Artifact/content nesting corrected", unwrapped))
+    except ImportError:
+        print("  WARNING: fixes.artifact_content not available", file=sys.stderr)
+    except Exception as exc:
+        print(f"  WARNING: artifact_content fix failed: {exc}", file=sys.stderr)
+
+    # --- TH scope ----------------------------------------------------------
+    try:
+        from fixes.th_scope import fix_th_scope
+        result = fix_th_scope(pdf)
+        patched = result.get("patched", 0)
+        if patched:
+            fixes_applied.append((f"TH scope attributes added ({patched} cells fixed)", patched))
+    except ImportError:
+        print("  WARNING: fixes.th_scope not available", file=sys.stderr)
+    except Exception as exc:
+        print(f"  WARNING: th_scope fix failed: {exc}", file=sys.stderr)
+
+    # --- Alt text placeholders ---------------------------------------------
+    try:
+        from fixes import alt_text
+        n = alt_text.fix(pdf, placeholder="Image — description needed")
+        if n:
+            fixes_applied.append((f"Alt text placeholders added ({n} figures)", n))
+    except ImportError:
+        print("  WARNING: fixes.alt_text not available", file=sys.stderr)
+    except Exception as exc:
+        print(f"  WARNING: alt_text fix failed: {exc}", file=sys.stderr)
+
+    return fixes_applied
+
+
+# ---------------------------------------------------------------------------
+# Console output helpers
+# ---------------------------------------------------------------------------
+
+_LINE_WIDTH = 70
+
+
+def _banner():
+    border = "═" * _LINE_WIDTH
+    title  = "PDF ACCESSIBILITY CHECKER — WCAG 2.1 Level AA (ADA Title II)"
+    pad    = (_LINE_WIDTH - len(title)) // 2
+    print(f"╔{border}╗")
+    print(f"║{' ' * pad}{title}{' ' * (_LINE_WIDTH - pad - len(title))}║")
+    print(f"╚{border}╝")
+    print()
+
+
+def _print_fix_summary(fixes_applied):
+    print("  Applying fixes...")
+    if not fixes_applied:
+        print("    (no changes needed)")
+        return
+    for desc, _count in fixes_applied:
+        print(f"    {_c('✓', 'green')}  {desc}")
+
+
+def _print_check_line(result):
+    """Print one check result line in the console summary."""
+    from checks.base import CheckStatus
+
+    badge = _badge(result.status.value)
+
+    crit  = result.wcag_criterion.ljust(6)
+    name  = result.name
+    level = f"({result.level})"
+
+    # right-align level within a fixed column layout
+    detail = ""
+    n_issues = len(result.issues)
+    if result.status == CheckStatus.FAIL and n_issues:
+        plural = "issue" if n_issues == 1 else "issues"
+        detail = f"  {_c(str(n_issues) + ' ' + plural, 'red')}"
+    elif result.status == CheckStatus.MANUAL:
+        detail = f"  {_c('review required', 'yellow')}"
+
+    # Fixed-width: badge=6, crit=7, name fills to col 54, level=5
+    name_field = f"{name:<38}"
+    level_field = f"{level:>4}"
+    print(f"    {badge} {crit}  {name_field} {level_field}{detail}")
+
+
+def _print_issue_details(all_results):
+    """Print the expanded issue details section."""
+    from checks.base import CheckStatus, Severity
+
+    failing = [r for r in all_results if r.status == CheckStatus.FAIL and r.issues]
+    if not failing:
+        return
+
+    print(f"  {_c('── Issue Details ──────────────────────────────────────', 'bold')}")
+    for result in failing:
+        print(f"  [{result.wcag_criterion}] {result.name}:")
+        for issue in result.issues:
+            sev_str = issue.severity.value if hasattr(issue.severity, "value") else str(issue.severity)
+            colour = "red" if sev_str == "ERROR" else "yellow"
+            msg = issue.message
+            loc = f" ({issue.location})" if issue.location else ""
+            print(f"    • {_c(sev_str, colour)}  {msg}{loc}")
+        print()
+
+
+def _print_summary(all_results, report_html, report_txt, output_pdf=None):
+    """Print the complete console summary section."""
+    from checks.base import CheckStatus
+
+    n_total  = len(all_results)
+    n_pass   = sum(1 for r in all_results if r.status == CheckStatus.PASS)
+    n_fail   = sum(1 for r in all_results if r.status == CheckStatus.FAIL)
+    n_manual = sum(1 for r in all_results if r.status == CheckStatus.MANUAL)
+    n_na     = sum(1 for r in all_results if r.status == CheckStatus.NA)
+
+    pct_pass   = round(n_pass   / n_total * 100) if n_total else 0
+    pct_fail   = round(n_fail   / n_total * 100) if n_total else 0
+    pct_manual = round(n_manual / n_total * 100) if n_total else 0
+
+    sep = "═" * _LINE_WIDTH
+    print(f"  {sep}")
+    print("  SUMMARY")
+    print(f"  {sep}")
+    print(f"    Passed:        {n_pass:3d} / {n_total}   ({pct_pass}%)")
+    print(f"    Failed:        {n_fail:3d} / {n_total}   ({pct_fail}%)")
+    print(f"    Needs Review:  {n_manual:3d} / {n_total}   ({pct_manual}%)")
+    print(f"    Not Applicable:{n_na:3d} / {n_total}")
+    print()
+
+    _print_issue_details(all_results)
+
+    # --- Report paths ------------------------------------------------------
+    print("  Reports saved:")
+    if report_html:
+        print(f"    {_c(report_html, 'cyan')}")
+    if report_txt:
+        print(f"    {_c(report_txt, 'cyan')}")
+    print()
+
+    # --- Overall status line -----------------------------------------------
+    if n_fail == 0 and n_manual == 0:
+        status_str = _c("✓ ALL CHECKS PASSED", "green")
+    elif n_fail == 0:
+        plural = "item" if n_manual == 1 else "items"
+        status_str = _c(f"⚠ MANUAL REVIEW NEEDED ({n_manual} {plural})", "yellow")
+    else:
+        parts = [f"{n_fail} failure{'s' if n_fail != 1 else ''}"]
+        if n_manual:
+            parts.append(f"{n_manual} need manual review")
+        status_str = _c(f"✗ ISSUES FOUND ({', '.join(parts)})", "red")
+
+    print(f"  Overall status: {status_str}")
+    print()
+
+
+# ---------------------------------------------------------------------------
+# Principle grouping
+# ---------------------------------------------------------------------------
+
+_PRINCIPLE_LABELS = {
+    "1": "PERCEIVABLE (Principle 1)",
+    "2": "OPERABLE (Principle 2)",
+    "3": "UNDERSTANDABLE (Principle 3)",
+    "4": "ROBUST (Principle 4)",
+}
+
+
+def _print_results_by_principle(all_results):
+    """Print check results grouped by WCAG principle."""
+    groups: dict = {}
+    for r in all_results:
+        key = r.wcag_criterion[0] if r.wcag_criterion else "0"
+        groups.setdefault(key, []).append(r)
+
+    for key in sorted(groups.keys()):
+        label = _PRINCIPLE_LABELS.get(key, f"Principle {key}")
+        print(f"  {_c(label, 'bold')}")
+        print(f"  {'─' * _LINE_WIDTH}")
+        for result in groups[key]:
+            _print_check_line(result)
+        print()
+
+
+# ---------------------------------------------------------------------------
+# Checker runner
+# ---------------------------------------------------------------------------
+
+_CHECKER_MODULES = [
+    ("metadata",  "checks.metadata",  "metadata_run",  "Metadata"),
+    ("structure", "checks.structure", "structure_run", "Structure"),
+    ("images",    "checks.images",    "images_run",    "Images"),
+    ("tables",    "checks.tables",    "tables_run",    "Tables"),
+    ("links",     "checks.links",     "links_run",     "Links"),
+    ("contrast",  "checks.contrast",  "contrast_run",  "Contrast"),
+    ("fonts",     "checks.fonts",     "fonts_run",     "Fonts"),
+    ("forms",     "checks.forms",     "forms_run",     "Forms"),
+    ("bookmarks", "checks.bookmarks", "bookmarks_run", "Bookmarks"),
+]
+
+
+def run_all_checks(pdf, pdf_path: str) -> list:
+    """Run every checker module and return a flat list of CheckResult objects."""
+    import importlib
+
+    all_results = []
+    for _short, module_name, alias, label in _CHECKER_MODULES:
+        print(f"    ▸ Checking {label}...", end="", flush=True)
+        try:
+            mod = importlib.import_module(module_name)
+            run_fn = getattr(mod, "run")
+            results = run_fn(pdf, pdf_path)
+            all_results.extend(results)
+            print(f"\r    {_c('✓', 'green')} {label:<12}  {len(results)} criterion/criteria")
+        except ImportError:
+            print(f"\r    {_c('⚠', 'yellow')} {label:<12}  module not found — skipped")
+        except Exception as exc:
+            print(f"\r    {_c('✗', 'red')} {label:<12}  error: {exc}")
+
+    return all_results
+
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="check_pdf.py",
+        description="WCAG 2.1 Level AA accessibility checker for PDF files.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "pdf",
+        metavar="PDF",
+        help="Path to the PDF file to check.",
+    )
+    parser.add_argument(
+        "--fix", "-f",
+        action="store_true",
+        help="Apply automatic fixes before checking.",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        metavar="OUT",
+        help="Output path for the fixed PDF (default: <name>_fixed.pdf).",
+    )
+    parser.add_argument(
+        "--report-only",
+        action="store_true",
+        help="Skip the console summary; only generate report files.",
+    )
+    parser.add_argument(
+        "--no-html",
+        action="store_true",
+        help="Skip HTML report generation.",
+    )
+    parser.add_argument(
+        "--no-txt",
+        action="store_true",
+        help="Skip TXT report generation.",
+    )
+    parser.add_argument(
+        "--lang",
+        default="en-US",
+        metavar="LANG",
+        help="BCP-47 language code to set when using --fix (default: en-US).",
+    )
+    parser.add_argument(
+        "--title",
+        default=None,
+        metavar="TITLE",
+        help=(
+            "Document title to set when using --fix. "
+            "Defaults to the filename stem."
+        ),
+    )
+    return parser
+
+
+# ---------------------------------------------------------------------------
+# Exit code helpers
+# ---------------------------------------------------------------------------
+
+def _exit_code(all_results) -> int:
+    """Return 0 (all pass), 1 (any fail), or 2 (any manual, no fail)."""
+    from checks.base import CheckStatus
+    statuses = {r.status for r in all_results}
+    if CheckStatus.FAIL in statuses:
+        return 1
+    if CheckStatus.MANUAL in statuses:
+        return 2
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    pdf_path = Path(args.pdf)
+
+    # --- Validate input path -----------------------------------------------
+    if not pdf_path.exists():
+        print(f"Error: file not found: {pdf_path}", file=sys.stderr)
+        return 1
+    if not pdf_path.is_file():
+        print(f"Error: not a file: {pdf_path}", file=sys.stderr)
+        return 1
+
+    # --- Resolve output path -----------------------------------------------
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        output_path = pdf_path.with_name(pdf_path.stem + "_fixed" + pdf_path.suffix)
+
+    # --- Resolve title default ---------------------------------------------
+    title = args.title if args.title else pdf_path.stem
+
+    # --- Banner ------------------------------------------------------------
+    _banner()
+
+    # --- Open PDF ----------------------------------------------------------
+    try:
+        import pikepdf
+    except ImportError:
+        print("Error: pikepdf is required. Install it with: pip install pikepdf", file=sys.stderr)
+        return 1
+
+    try:
+        pdf = pikepdf.open(str(pdf_path))
+    except Exception as exc:
+        print(f"Error: could not open PDF: {exc}", file=sys.stderr)
+        return 1
+
+    n_pages = len(pdf.pages)
+    today   = date.today().isoformat()
+    pdf_name = pdf_path.name
+
+    print(f"  File : {_c(pdf_name, 'bold')}")
+    print(f"  Pages: {n_pages}")
+    print(f"  Date : {today}")
+    print()
+
+    # --- Apply fixes -------------------------------------------------------
+    fixed_pdf_path = str(pdf_path)  # default: check original
+
+    if args.fix:
+        try:
+            fixes_applied = apply_fixes(pdf, str(pdf_path), args.lang, title)
+            _print_fix_summary(fixes_applied)
+
+            # Save the fixed PDF
+            try:
+                pdf.save(str(output_path))
+                print(f"    →  Saved: {_c(str(output_path), 'cyan')}")
+            except Exception as exc:
+                print(f"  ERROR: could not save fixed PDF: {exc}", file=sys.stderr)
+                pdf.close()
+                return 1
+
+            pdf.close()
+
+            # Re-open the fixed PDF for checking
+            fixed_pdf_path = str(output_path)
+            try:
+                pdf = pikepdf.open(fixed_pdf_path)
+            except Exception as exc:
+                print(f"Error: could not reopen fixed PDF for checking: {exc}", file=sys.stderr)
+                return 1
+
+        except Exception as exc:
+            print(f"  ERROR during fix application: {exc}", file=sys.stderr)
+            pdf.close()
+            return 1
+
+        print()
+
+    # --- Run checkers -------------------------------------------------------
+    print("  Checking WCAG 2.1 Level AA criteria...")
+    print()
+
+    all_results = run_all_checks(pdf, fixed_pdf_path)
+    pdf.close()
+
+    print()
+
+    # --- Console summary ----------------------------------------------------
+    if not args.report_only:
+        _print_results_by_principle(all_results)
+
+    # --- Generate reports ---------------------------------------------------
+    stem = pdf_path.stem
+    report_html_path = None
+    report_txt_path  = None
+
+    if not args.no_html:
+        report_html_path = str(pdf_path.with_name(stem + "_accessibility_report.html"))
+        try:
+            from report.html_report import generate as html_generate
+            html_generate(all_results, str(pdf_path), report_html_path)
+        except ImportError:
+            print("WARNING: report.html_report not available — HTML report skipped.", file=sys.stderr)
+            report_html_path = None
+        except Exception as exc:
+            print(f"WARNING: HTML report generation failed: {exc}", file=sys.stderr)
+            report_html_path = None
+
+    if not args.no_txt:
+        report_txt_path = str(pdf_path.with_name(stem + "_accessibility_report.txt"))
+        try:
+            from report.txt_report import generate as txt_generate
+            txt_generate(all_results, str(pdf_path), report_txt_path)
+        except ImportError:
+            print("WARNING: report.txt_report not available — TXT report skipped.", file=sys.stderr)
+            report_txt_path = None
+        except Exception as exc:
+            print(f"WARNING: TXT report generation failed: {exc}", file=sys.stderr)
+            report_txt_path = None
+
+    # --- Print summary (with report paths) ----------------------------------
+    if not args.report_only:
+        _print_summary(all_results, report_html_path, report_txt_path,
+                       output_pdf=str(output_path) if args.fix else None)
+    else:
+        # Minimal output when --report-only: just print the file paths
+        print("  Reports saved:")
+        if report_html_path:
+            print(f"    {_c(report_html_path, 'cyan')}")
+        if report_txt_path:
+            print(f"    {_c(report_txt_path, 'cyan')}")
+        print()
+
+    return _exit_code(all_results)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
