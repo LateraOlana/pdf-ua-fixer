@@ -379,6 +379,14 @@ tr.detail-row.hidden { display: none; }
     border-top: 1px solid #e2e8f0;
     margin-top: 3rem;
 }
+
+.auto-fix-preview { background:#f0fdf4; border-left:4px solid #22c55e; padding:20px 24px; border-radius:8px; margin:24px 0; }
+.auto-fixed { background:#f0fdf4; border-left:4px solid #22c55e; padding:20px 24px; border-radius:8px; margin:24px 0; }
+.fix-title, .fixed-title { color:#15803d; margin:0 0 12px; font-size:1.1rem; }
+.fix-list, .fixed-list { list-style:none; padding:0; margin:12px 0; }
+.fix-list li, .fixed-list li { padding:10px 0; border-bottom:1px solid #bbf7d0; display:flex; align-items:flex-start; gap:10px; flex-wrap:wrap; }
+.fix-detail { width:100%; color:#166534; font-size:0.85rem; margin-top:4px; }
+.fix-command { background:#dcfce7; border-radius:6px; padding:12px 16px; margin-top:16px; font-family:monospace; font-size:0.9rem; color:#14532d; }
 """
 
 # ---------------------------------------------------------------------------
@@ -618,6 +626,88 @@ def _render_fixed_section(results: List[CheckResult]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Auto-fix preview section
+# ---------------------------------------------------------------------------
+
+def _render_auto_fix_preview(results: List[CheckResult]) -> str:
+    """Return HTML for 'What --fix Can Automatically Correct' or empty string."""
+    seen: set = set()
+    fixable_items: list = []  # (criterion, name, level, location)
+    for r in results:
+        for i in r.issues:
+            if i.fixable and not i.fix_applied and r.wcag_criterion not in seen:
+                seen.add(r.wcag_criterion)
+                fixable_items.append((r.wcag_criterion, r.name, r.level, i.location or ""))
+
+    if not fixable_items:
+        return ""
+
+    n = len(fixable_items)
+    li_html = []
+    for crit, name, level, loc in fixable_items:
+        level_cls = "level-a" if level == "A" else ("level-aa" if level == "AA" else "")
+        loc_html = (
+            f'<div class="fix-detail">&#128205; {_esc(loc)}</div>'
+            if loc else ""
+        )
+        li_html.append(
+            f'<li>'
+            f'<span class="crit-badge badge" style="background:#166534;color:#fff;">{_esc(crit)}</span>'
+            f'<strong>{_esc(name)}</strong>'
+            f'<span class="level-badge badge" style="background:#3b82f6;color:#fff;">{_esc(level)}</span>'
+            f'{loc_html}'
+            f'</li>'
+        )
+
+    return (
+        f'<section class="auto-fix-preview">'
+        f'<h2 class="section-title fix-title">&#128295; What <code>--fix</code> Can Automatically Correct</h2>'
+        f'<p>Running <code>python check_pdf.py your_file.pdf --fix</code> will automatically correct '
+        f'<strong>{n} issue(s)</strong> in this document without any manual editing:</p>'
+        f'<ul class="fix-list">{"".join(li_html)}</ul>'
+        f'<div class="fix-command">'
+        f'<code>python check_pdf.py &lt;your_pdf&gt; --fix</code>'
+        f'</div>'
+        f'</section>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auto-fixed summary section
+# ---------------------------------------------------------------------------
+
+def _render_auto_fixed_summary(results: List[CheckResult]) -> str:
+    """Return HTML for 'Issues Corrected by --fix' or empty string."""
+    seen: set = set()
+    fixed_items: list = []  # (criterion, name)
+    for r in results:
+        for i in r.issues:
+            if i.fix_applied and r.wcag_criterion not in seen:
+                seen.add(r.wcag_criterion)
+                fixed_items.append((r.wcag_criterion, r.name))
+
+    if not fixed_items:
+        return ""
+
+    li_html = []
+    for crit, name in fixed_items:
+        li_html.append(
+            f'<li>'
+            f'<span class="crit-badge badge" style="background:#166534;color:#fff;">{_esc(crit)}</span>'
+            f'<strong>{_esc(name)}</strong>'
+            f' — corrected automatically'
+            f'</li>'
+        )
+
+    return (
+        f'<section class="auto-fixed">'
+        f'<h2 class="section-title fixed-title">&#10003; Issues Corrected by <code>--fix</code></h2>'
+        f'<ul class="fixed-list">{"".join(li_html)}</ul>'
+        f'</section>'
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -645,9 +735,11 @@ def generate(results: List[CheckResult], pdf_path: str, output_path: str) -> Non
     bar_colour = "#22c55e" if pct_pass >= 80 else ("#f59e0b" if pct_pass >= 50 else "#ef4444")
     bar_gradient = f"background: linear-gradient(90deg, {bar_colour} 0%, {bar_colour}cc 100%);"
 
-    results_tables   = _render_results_tables(results)
-    manual_section   = _render_manual_section(results)
-    fixed_section    = _render_fixed_section(results)
+    results_tables      = _render_results_tables(results)
+    manual_section      = _render_manual_section(results)
+    fixed_section       = _render_fixed_section(results)
+    auto_fix_preview    = _render_auto_fix_preview(results)
+    auto_fixed_summary  = _render_auto_fixed_summary(results)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -712,6 +804,12 @@ def generate(results: List[CheckResult], pdf_path: str, output_path: str) -> Non
       <div class="bar-fill" style="width:{pct_pass}%;{bar_gradient}"></div>
     </div>
   </div>
+
+  <!-- ---- Auto-fix preview (shown when --fix has NOT yet been run) ---- -->
+  {auto_fix_preview}
+
+  <!-- ---- Auto-fixed summary (shown when --fix was run) ---- -->
+  {auto_fixed_summary}
 
   <!-- ---- Results by WCAG principle ---- -->
   <h2 class="section-title">Results by WCAG Criterion</h2>

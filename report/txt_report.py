@@ -385,6 +385,52 @@ def _build_auto_fixed(results: List[CheckResult]) -> str:
     return "\n".join(lines)
 
 
+def _build_fixable_preview(results: List[CheckResult]) -> str:
+    """Section shown when --fix has NOT yet been run: lists what it would fix."""
+    fixable: dict = {}  # criterion -> (name, level, location)
+    for r in results:
+        for i in r.issues:
+            if i.fixable and not i.fix_applied and r.wcag_criterion not in fixable:
+                fixable[r.wcag_criterion] = (r.name, r.level, i.location or "")
+    if not fixable:
+        return ""
+
+    lines = [_section("WHAT --fix CAN AUTOMATICALLY CORRECT"), ""]
+    lines.append(f"  Running:  python check_pdf.py <your_pdf> --fix")
+    lines.append(f"  ...will correct {len(fixable)} issue(s) automatically:")
+    lines.append("")
+    for crit, (name, level, loc) in fixable.items():
+        header = f"  [{crit}] {name}"
+        level_str = f"Level {level}"
+        pad = max(0, 72 - len(header) - len(level_str))
+        lines.append(f"{header}{' ' * pad}{level_str}")
+        if loc:
+            lines.append(f"         {loc}")
+        lines.append("")
+    lines.append(_rule("-"))
+    return "\n".join(lines)
+
+
+def _build_fixes_applied(results: List[CheckResult]) -> str:
+    """Section shown after --fix was run: lists what was corrected."""
+    fixed: dict = {}  # criterion -> name
+    for r in results:
+        for i in r.issues:
+            if i.fix_applied and r.wcag_criterion not in fixed:
+                fixed[r.wcag_criterion] = r.name
+    if not fixed:
+        return ""
+
+    lines = [_section("AUTOMATICALLY FIXED BY --fix"), ""]
+    lines.append("  The following issues were corrected automatically:")
+    lines.append("")
+    for crit, name in fixed.items():
+        lines.append(f"  [FIXED]  [{crit}] {name}")
+    lines.append("")
+    lines.append(_rule())
+    return "\n".join(lines)
+
+
 def _build_footer() -> str:
     url = "https://www.w3.org/TR/WCAG21/"
     content = f"WCAG 2.1 REFERENCE: {url}"
@@ -418,6 +464,8 @@ def generate(results: List[CheckResult], pdf_path: str, output_path: str) -> Non
         "",
         _build_summary(results),
         "",
+        _build_fixable_preview(results),
+        _build_fixes_applied(results),
         _build_principles(results),
         _build_manual_review(results),
         "",

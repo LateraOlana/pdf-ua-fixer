@@ -76,93 +76,114 @@ def _badge(status_value: str) -> str:
 # ---------------------------------------------------------------------------
 
 def apply_fixes(pdf, pdf_path: str, lang: str, title: str):
+    """Apply all automatic fixes.  Returns a list of dicts:
+      {"desc": str, "status": "changed"|"already_ok"|"error", "detail": str}
+    Every fixer always produces an entry so the caller can show what was
+    attempted vs. what actually changed.
     """
-    Apply all available automatic fixes to an open pikepdf.Pdf.
+    results = []
 
-    Returns a list of (description, count) tuples for each fix applied.
-    """
-    fixes_applied = []
+    def _record(desc, changed, detail=""):
+        results.append({
+            "desc": desc,
+            "status": "changed" if changed else "already_ok",
+            "detail": detail,
+        })
+
+    def _error(desc, exc):
+        results.append({"desc": desc, "status": "error", "detail": str(exc)})
 
     # --- PDF/UA metadata ---------------------------------------------------
     try:
         from fixes.pdfua_metadata import fix_pdfua_metadata
-        result = fix_pdfua_metadata(pdf)
-        if result.get("added"):
-            fixes_applied.append(("PDF/UA metadata set", 1))
-    except ImportError:
-        print("  WARNING: fixes.pdfua_metadata not available", file=sys.stderr)
+        r = fix_pdfua_metadata(pdf)
+        _record("PDF/UA metadata (pdfuaid:part = 1)", r.get("added", False))
     except Exception as exc:
-        print(f"  WARNING: pdfua_metadata fix failed: {exc}", file=sys.stderr)
+        _error("PDF/UA metadata", exc)
 
     # --- Document title ----------------------------------------------------
     try:
         from fixes import document_title
         n = document_title.fix(pdf, title)
-        if n:
-            fixes_applied.append(("Document title added", n))
-    except ImportError:
-        print("  WARNING: fixes.document_title not available", file=sys.stderr)
+        _record("Document title", n > 0, f'set to "{title}"' if n else "already present")
     except Exception as exc:
-        print(f"  WARNING: document_title fix failed: {exc}", file=sys.stderr)
+        _error("Document title", exc)
 
     # --- Document language -------------------------------------------------
     try:
         from fixes import language
         n = language.fix(pdf, lang)
-        if n:
-            fixes_applied.append((f"Document language set ({lang})", n))
-    except ImportError:
-        print("  WARNING: fixes.language not available", file=sys.stderr)
+        _record("Document language (/Lang)", n > 0,
+                f"set to {lang}" if n else f"already set to {lang}")
     except Exception as exc:
-        print(f"  WARNING: language fix failed: {exc}", file=sys.stderr)
+        _error("Document language", exc)
 
     # --- Untagged paths ----------------------------------------------------
     try:
         from fixes.untagged_paths import fix_untagged_paths
-        result = fix_untagged_paths(pdf)
-        wrapped = result.get("wrapped", 0)
-        fixes_applied.append(("Untagged paths wrapped as artifacts", wrapped))
-    except ImportError:
-        print("  WARNING: fixes.untagged_paths not available", file=sys.stderr)
+        r = fix_untagged_paths(pdf)
+        wrapped = r.get("wrapped", 0)
+        _record("Untagged path sequences → /Artifact", wrapped > 0,
+                f"{wrapped} sequence(s) wrapped" if wrapped else "none found")
     except Exception as exc:
-        print(f"  WARNING: untagged_paths fix failed: {exc}", file=sys.stderr)
+        _error("Untagged paths", exc)
 
     # --- Artifact/content nesting ------------------------------------------
     try:
         from fixes.artifact_content import fix_artifact_content
-        result = fix_artifact_content(pdf)
-        unwrapped = result.get("unwrapped", 0)
-        if unwrapped:
-            fixes_applied.append(("Artifact/content nesting corrected", unwrapped))
-    except ImportError:
-        print("  WARNING: fixes.artifact_content not available", file=sys.stderr)
+        r = fix_artifact_content(pdf)
+        unwrapped = r.get("unwrapped", 0)
+        _record("Artifact blocks containing tagged content", unwrapped > 0,
+                f"{unwrapped} block(s) restructured" if unwrapped else "none found")
     except Exception as exc:
-        print(f"  WARNING: artifact_content fix failed: {exc}", file=sys.stderr)
+        _error("Artifact/content nesting", exc)
 
     # --- TH scope ----------------------------------------------------------
     try:
         from fixes.th_scope import fix_th_scope
-        result = fix_th_scope(pdf)
-        patched = result.get("patched", 0)
-        if patched:
-            fixes_applied.append((f"TH scope attributes added ({patched} cells fixed)", patched))
-    except ImportError:
-        print("  WARNING: fixes.th_scope not available", file=sys.stderr)
+        r = fix_th_scope(pdf)
+        patched = r.get("patched", 0)
+        _record("TH header cell /Scope attributes", patched > 0,
+                f"{patched} cell(s) updated" if patched else "none needed / no tables")
     except Exception as exc:
-        print(f"  WARNING: th_scope fix failed: {exc}", file=sys.stderr)
+        _error("TH scope", exc)
 
     # --- Alt text placeholders ---------------------------------------------
     try:
         from fixes import alt_text
         n = alt_text.fix(pdf, placeholder="Image — description needed")
-        if n:
-            fixes_applied.append((f"Alt text placeholders added ({n} figures)", n))
-    except ImportError:
-        print("  WARNING: fixes.alt_text not available", file=sys.stderr)
+        _record("Figure /Alt placeholder text", n > 0,
+                f"{n} figure(s) updated" if n else "none needed / no untagged figures")
     except Exception as exc:
-        print(f"  WARNING: alt_text fix failed: {exc}", file=sys.stderr)
+        _error("Figure alt text", exc)
 
-    return fixes_applied
+    return results
+
+
+def _print_fix_summary(fix_results, output_path: str):
+    """Print each fixer's outcome with a clear changed / no-change / error badge."""
+    n_changed    = sum(1 for r in fix_results if r["status"] == "changed")
+    n_already_ok = sum(1 for r in fix_results if r["status"] == "already_ok")
+    n_errors     = sum(1 for r in fix_results if r["status"] == "error")
+
+    print("  Applying fixes...")
+    print()
+    for r in fix_results:
+        if r["status"] == "changed":
+            badge  = _c("✓  CHANGED   ", "green")
+        elif r["status"] == "already_ok":
+            badge  = _c("─  NO CHANGE ", "gray")
+        else:
+            badge  = _c("✗  ERROR     ", "red")
+        detail = f"  ({r['detail']})" if r.get("detail") else ""
+        print(f"    {badge}  {r['desc']}{detail}")
+
+    print()
+    print(f"    {_c(str(n_changed), 'green')} change(s) applied  •  "
+          f"{_c(str(n_already_ok), 'gray')} already correct  •  "
+          f"{_c(str(n_errors), 'red')} error(s)")
+    print(f"    →  Saved: {_c(str(output_path), 'cyan')}")
+    print()
 
 
 # ---------------------------------------------------------------------------
@@ -180,15 +201,6 @@ def _banner():
     print(f"║{' ' * pad}{title}{' ' * (_LINE_WIDTH - pad - len(title))}║")
     print(f"╚{border}╝")
     print()
-
-
-def _print_fix_summary(fixes_applied):
-    print("  Applying fixes...")
-    if not fixes_applied:
-        print("    (no changes needed)")
-        return
-    for desc, _count in fixes_applied:
-        print(f"    {_c('✓', 'green')}  {desc}")
 
 
 def _print_check_line(result):
@@ -276,24 +288,27 @@ def _print_next_steps(all_results, already_fixed: bool):
         for i in r.issues if not i.fixable
     ]
 
-    if auto_fixable_issues and not already_fixed:
+    # --- What --fix can do (always shown; wording changes if already fixed) ---
+    if auto_fixable_issues:
         n = len(auto_fixable_issues)
         checks = len({r.wcag_criterion for r, _ in auto_fixable_issues})
-        print(f"  {_c('1. Auto-fixable issues  →  run with --fix', 'green')}")
-        print(f"     {n} issue{'s' if n != 1 else ''} across {checks} "
-              f"criterion/criteria can be corrected automatically:")
+        if already_fixed:
+            print(f"  {_c('✓  --fix was applied — auto-fixable issues corrected:', 'green')}")
+        else:
+            print(f"  {_c('1. --fix can automatically correct these issues:', 'green')}")
         seen = set()
         for result, issue in auto_fixable_issues:
             key = result.wcag_criterion
             if key not in seen:
                 seen.add(key)
-                print(f"       • [{key}] {result.name}")
+                tag = _c("✓ fixed", "green") if already_fixed else _c("→ fixable", "green")
+                print(f"       {tag}  [{key}] {result.name}")
+                if issue.location:
+                    print(f"              Location: {issue.location}")
         print()
-        print(f"     {_c('Run:', 'bold')} python check_pdf.py <your_pdf> --fix")
-        print()
-    elif auto_fixable_issues and already_fixed:
-        print(f"  {_c('✓ All auto-fixable issues were corrected by --fix.', 'green')}")
-        print()
+        if not already_fixed:
+            print(f"     {_c('Run:', 'bold')} python check_pdf.py <your_pdf> {_c('--fix', 'bold')}")
+            print()
 
     # --- Manual failures ------------------------------------------------------
     if manual_issues:
@@ -617,17 +632,17 @@ def main() -> int:
 
     if args.fix:
         try:
-            fixes_applied = apply_fixes(pdf, str(pdf_path), args.lang, title)
-            _print_fix_summary(fixes_applied)
+            fix_results = apply_fixes(pdf, str(pdf_path), args.lang, title)
 
-            # Save the fixed PDF
+            # Save before printing so output_path exists when referenced
             try:
                 pdf.save(str(output_path))
-                print(f"    →  Saved: {_c(str(output_path), 'cyan')}")
             except Exception as exc:
                 print(f"  ERROR: could not save fixed PDF: {exc}", file=sys.stderr)
                 pdf.close()
                 return 1
+
+            _print_fix_summary(fix_results, output_path)
 
             pdf.close()
 
